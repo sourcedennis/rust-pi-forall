@@ -204,6 +204,64 @@ fn tc_term< Fresh: FreshVar >(
       tc_term( fresh_env, env, tm, Some( *ty.clone( ) ) )?;
       Ok( *ty.clone( ) )
     },
+    (Term::TyBool, None) => Ok( Term::Type ),
+    (Term::LitBool( _ ), None) => Ok( Term::TyBool ),
+    (Term::If( cond, x, y ), None) => {
+      tc_term( fresh_env, env, cond, Some( Term::TyBool ) )?;
+      let x_ty = tc_term( fresh_env, env, x, None )?; // infer
+      let y_ty = tc_term( fresh_env, env, y, Some( x_ty ) )?; // check
+      Ok( y_ty )
+    },
+    (Term::Sigma( x_ty, bnd ), None) => {
+      // Check:  Γ ⊢ x_ty : Type
+      tc_type( fresh_env, env, x_ty )?;
+
+      let (x, y_ty) = bnd.clone( ).unbind( fresh_env );
+
+      let mut env2 = env.clone( );
+      env2.extend_type( x, *x_ty.clone( ) );
+      // Check:  Γ,(x:x_ty) ⊢ y_ty : Type
+      tc_type( fresh_env, &env2, &y_ty )?;
+
+      Ok( Term::Type )
+    },
+    // This requires *checking*
+    (Term::Prod( x, y ), Some( Term::Sigma( x_ty, bnd ) ) ) => {
+      let (x_name, y_ty) = bnd.unbind( fresh_env );
+
+      tc_term( fresh_env, env, x, Some( *x_ty.clone( ) ) )?;
+
+      let mut env2 = env.clone( );
+      env2.extend( x_name.clone( ), *x.clone( ), *x_ty.clone( ) );
+      tc_term( fresh_env, &env2, y, Some( *y_ty.clone( ) ) )?;
+      
+      Ok( Term::Sigma( x_ty, Bind::bind( &x_name, y_ty ) ) )
+    },
+    (Term::LetPair( p, bnd2 ), Some( ty )) => {
+      // "x" is the outer-most name. "y" is innermost
+      // let (x,y) = ? in ?
+      let (x_name, bnd1) = bnd2.clone( ).unbind( fresh_env );
+      let (y_name, body) = bnd1.unbind( fresh_env );
+
+      let p_ty = tc_term( fresh_env, env, p, None )?;
+      // TODO: WHNF p_ty
+      match p_ty {
+        Term::Sigma( x_ty, s_bnd ) => {
+          let y_ty = s_bnd.instantiate( &Term::Var( Name::Free( x_name.clone( ) ) ) );
+          // TODO: Maybe, p ~ (x_name, y_name)
+          
+          let mut env2 = env.clone( );
+          env2.extend_type( x_name, *x_ty );
+          env2.extend_type( y_name, *y_ty );
+          let ty = tc_term( fresh_env, &env2, &body, Some( ty ) )?; // Why is this checked? Can't we infer it?
+
+          Ok( ty )
+        },
+        _ => Err( "Scrutinee must have a Sigma type".to_owned( ) )
+      }
+    },
+    (Term::Prod( _, _ ), Some( ty ) ) =>
+      Err( format!( "Products must have a Sigma Type, not {:?}", ty ) ),
     (tm, Some( ty ) ) => {
       let ty2 = tc_term( fresh_env, env, tm, None )?;
       if !ty.aeq( &ty2 ) {
@@ -212,8 +270,12 @@ fn tc_term< Fresh: FreshVar >(
         Ok( ty )
       }
     },
-    (tm, None) =>
-      Err( format!( "Must have a type annotation to check {:?}", tm ) )
+    (Term::Lam( _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
+    (Term::Prod( _, _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
+    (Term::LetPair( _, _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
   }
 }
 

@@ -12,11 +12,10 @@ use nom::{
 use nom_locate::LocatedSpan;
 // local imports
 use crate::unbound::{FreeName, Name, Bind};
-use crate::syntax::{Module, Decl, Term};
+use crate::syntax::{Module, Decl, Term, Prec, RESERVED};
 
 
 type Span< 'a > = LocatedSpan< &'a str >;
-
 
 // # Lexer
 
@@ -39,10 +38,11 @@ where
 
 /// Parses: [a-zA-Z] [a-zA-Z0-9]*
 ///   (also parses other Unicode Alphabetic chars, that's ok)
+#[must_use]
 fn lex_word( input: Span ) -> IResult< Span, () > {
   // this is actually: [a-zA-Z]* [a-zA-Z0-9]* but ambiguity is irrelevant
-  let (input, _) = take_while1( |c:char| c.is_alphabetic( ) )( input )?;
-  let (input, _) = take_while( |c:char| c.is_alphanumeric( ) )( input )?;
+  let (input, _) = take_while1( |c:char| c.is_alphabetic( ) || c == '_' )( input )?;
+  let (input, _) = take_while( |c:char| c.is_alphanumeric( ) || c == '_' )( input )?;
   Ok( (input, ()) )
 }
 
@@ -51,13 +51,17 @@ fn lex_symbol( input: Span ) -> IResult< Span, () > {
   discard(
     alt(
       (
-        tag( "\\" ),
+        tag( "\\" ), // for lambdas
         tag( "(" ),
         tag( ")" ),
         tag( "->" ),
         tag( ":" ),
-        tag( "." ),
-        tag( "=" )
+        tag( "." ), // for lambdas
+        tag( "=" ),
+        tag( "{" ), // for sigma types
+        tag( "|" ), // for sigma types
+        tag( "}" ), // for sigma types
+        tag( "," )
       )
     )
   )( input )
@@ -137,6 +141,7 @@ pub fn is_lex_end( input: Span ) -> bool {
 
 // # Parse
 
+#[must_use]
 pub fn lex_word_if< F >(
   cond: F
 ) -> impl Fn( Span ) -> IResult< Span, &str >
@@ -199,7 +204,20 @@ pub fn p_module( input: Span ) -> IResult< Span, Module > {
 }
 
 pub fn p_identifier( input: Span ) -> IResult< Span, &str > {
-  lex_word_if( |x| x != "Type" )( input )
+  lex_word_if( |x| !RESERVED.contains( &x ) )( input )
+}
+
+fn p_term_prec< 'a >( prec: Prec )
+  -> impl Fn( Span< 'a > ) -> IResult< Span< 'a >, Term > {
+
+  match prec {
+    Prec::Colon      => p_term_colon,
+    Prec::Arrow      => p_term_arrow,
+    Prec::Lambda     => p_term_lambda,
+    Prec::IfThenElse => p_term_iflet,
+    Prec::App        => p_term_app,
+    Prec::Atom       => p_term_atom
+  }
 }
 
 /// Parses terms with precedence 4. (Weakest)
@@ -209,12 +227,12 @@ pub fn p_identifier( input: Span ) -> IResult< Span, &str > {
 /// > f : Nat -> Nat : Set
 /// which parses as:
 /// > f : (Nat -> Nat : Set)
-pub fn p_term4< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
-  let (input, x) = p_term3( input )?;
+pub fn p_term_colon< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, x) = p_term_prec( Prec::Colon.inc( ) )( input )?;
   let (input, t) = opt( lex_symbol_if( |x| x == ":" ) )( input )?;
 
   if t.is_some( ) {
-    let (input, y) = p_term4( input )?;
+    let (input, y) = p_term_prec( Prec::Colon )( input )?;
     Ok( ( input, Term::Ann( Box::new( x ), Box::new( y ) ) ) )
   } else {
     Ok( (input, x) )
@@ -222,15 +240,15 @@ pub fn p_term4< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
 }
 
 /// Parse:
-/// <term3> := <term2> '->' <term3>
-///          | '(' <identifier> ':' <term3> ')' '->' <term3>
-///          | <term2>
-pub fn p_term3< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
-  /// Parses: '(' <identifier> ':' <term3> ')'
+/// <term> := <term+1> '->' <term>
+///         | '(' <identifier> ':' <term> ')' '->' <term>
+///         | <term+1>
+pub fn p_term_arrow< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  /// Parses: '(' <identifier> ':' <term> ')'
   fn p_named_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, (&'a str, Term) > {
     delimited(
       lex_symbol_if( |x| x == "(" ),
-      separated_pair( p_identifier, lex_symbol_if( |x| x == ":" ), p_term3 ),
+      separated_pair( p_identifier, lex_symbol_if( |x| x == ":" ), p_term_prec( Prec::Arrow ) ),
       lex_symbol_if( |x| x == ")" )
     )( input )
   }
@@ -239,7 +257,7 @@ pub fn p_term3< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
     alt(
       (
         map( p_named_type, |(n,t)| (Some(n), t) ),
-        map( p_term2, |t| (None, t) )
+        map( p_term_prec( Prec::Arrow.inc( ) ), |t| (None, t) )
       )
     )( input )?;
 
@@ -247,7 +265,7 @@ pub fn p_term3< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
     opt(
       preceded(
         lex_symbol_if( |x| x == "->" ),
-        p_term3
+        p_term_prec( Prec::Arrow )
       )
     )( input )?;
 
@@ -264,15 +282,15 @@ pub fn p_term3< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   } else if lhs_name.is_some( ) { // cannot have just (x : A) as type
     // if it has a name, there must be an arrow
     Err(nom::Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
-  } else { // case: <term3> := <term2>
+  } else { // case: <term> := <term+1>
     Ok( (input, lhs_term) )
   }
 }
 
 /// Parse:
-/// <term2> := '\' <identifier>* '.' <term2>
-///          | <term1>
-pub fn p_term2< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+/// <term> := '\' <identifier>* '.' <term>
+///         | <term+1>
+pub fn p_term_lambda< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   let (input, m_lambda) = opt( lex_symbol_if( |x| x == "\\" ) )( input )?;
 
   if m_lambda.is_some( ) {
@@ -280,7 +298,7 @@ pub fn p_term2< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
 
     let (input, _) = lex_symbol_if( |x| x == "." )( input )?;
     
-    let (input, mut body) = p_term2( input )?;
+    let (input, mut body) = p_term_prec( Prec::Lambda )( input )?;
 
     for id in identifiers.into_iter( ).rev( ) {
       let name = FreeName::from( FreeName::Text( id.to_owned( ) ) );
@@ -289,13 +307,58 @@ pub fn p_term2< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
 
     Ok( (input, body) )
   } else {
-    p_term1( input )
+    p_term_prec( Prec::Lambda.inc( ) )( input )
   }
 }
 
-/// Parse: <term1> := <term0>*
-pub fn p_term1< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
-  let (input, terms) = many1( p_term0 )( input )?;
+pub fn p_term_iflet< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  alt(
+    (
+      p_ifthenelse,
+      p_letin,
+      p_term_prec( Prec::IfThenElse.inc( ) )
+    )
+  )( input )
+}
+
+/// Parse:
+/// <term> := 'if' <term> 'then' <term> 'else' <term>
+///         | <term+1>
+/// 
+/// Remarkably, we can have nested if-then-else statements inside any of its
+/// three arguments, as no ambiguity occurs.
+pub fn p_ifthenelse< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _) = lex_word_if( |x| x == "if" )( input )?;
+  let (input, cond) = p_term_prec( Prec::IfThenElse )( input )?;
+  let (input, _) = lex_word_if( |x| x == "then" )( input )?;
+  let (input, if_case) = p_term_prec( Prec::IfThenElse )( input )?;
+  let (input, _) = lex_word_if( |x| x == "else" )( input )?;
+  let (input, else_case) = p_term_prec( Prec::IfThenElse )( input )?;
+
+  Ok( (input, Term::If( Box::new( cond ), Box::new( if_case ), Box::new( else_case ) ) ) )
+}
+
+pub fn p_letin< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _) = lex_word_if( |x| x == "let" )( input )?;
+  let (input, _) = lex_symbol_if( |x| x == "(" )( input )?;
+  let (input, x_name) = p_identifier( input )?;
+  let (input, _) = lex_symbol_if( |x| x == "," )( input )?;
+  let (input, y_name) = p_identifier( input )?;
+  let (input, _) = lex_symbol_if( |x| x == ")" )( input )?;
+  let (input, _) = lex_symbol_if( |x| x == "=" )( input )?;
+  let (input, scrut) = p_term_prec( Prec::weakest( ) )( input )?;
+  let (input, _) = lex_word_if( |x| x == "in" )( input )?;
+  let (input, body) = p_term_prec( Prec::weakest( ) )( input )?;
+
+  let bnd1 = Bind::bind( &FreeName::Text( y_name.to_string( ) ), Box::new( body ) );
+  let bnd2 = Bind::bind( &FreeName::Text( x_name.to_string( ) ), bnd1 );
+
+  Ok( (input, Term::LetPair( Box::new( scrut ), bnd2 ) ) )
+}
+
+/// Parse: <term> := <term+1>+
+pub fn p_term_app< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, terms) = many1( p_term_prec( Prec::App.inc( ) ) )( input )?;
   let mut t_iter = terms.into_iter( );
 
   if let Some( mut term ) = t_iter.next( ) {
@@ -309,19 +372,52 @@ pub fn p_term1< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   }
 }
 
-pub fn p_term0< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+pub fn p_term_atom< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   alt(
     (
       map( lex_word_if( |x| x == "Type" ), |_| Term::Type ),
-      // TODO: Fix identifier
+      map( lex_word_if( |x| x == "Bool" ), |_| Term::TyBool ),
+      map( lex_word_if( |x| x == "True" ), |_| Term::LitBool( true ) ),
+      map( lex_word_if( |x| x == "False" ), |_| Term::LitBool( false ) ),
       map( p_identifier, |x| Term::Var( Name::Free( FreeName::Text( x.to_owned( ) ) ) ) ),
-      delimited(
-        lex_symbol_if( |x| x == "(" ),
-        p_term4,
-        lex_symbol_if( |x| x == ")" )
-      )
+      p_sigma_type,
+      p_tuple
     )
   )( input )
+}
+
+/// Parse:
+/// <term> := '(' <term-w> ')'
+///         | '(' <term-w> ',' <term-w> ')'
+pub fn p_tuple< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _) = lex_symbol_if( |x| x == "(" )( input )?;
+  let (input, v1) = p_term_prec( Prec::weakest( ) )( input )?;
+
+  let (input, m_v2) =
+    opt( preceded(
+      lex_symbol_if( |x| x == "," ),
+      p_term_prec( Prec::weakest( ) )
+    ) )( input )?;
+
+  let (input, _) = lex_symbol_if( |x| x == ")" )( input )?;
+
+  if let Some( v2 ) = m_v2 {
+    Ok( ( input, Term::Prod( Box::new( v1 ), Box::new( v2 ) ) ) )
+  } else {
+    Ok( ( input, v1 ) )
+  }
+}
+
+pub fn p_sigma_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _)     = lex_symbol_if( |x| x == "{" )( input )?;
+  let (input, name)  = p_identifier( input )?;
+  let (input, _)     = lex_symbol_if( |x| x == ":" )( input )?;
+  let (input, a)     = p_term_prec( Prec::weakest( ) )( input )?;
+  let (input, _)     = lex_symbol_if( |x| x == "|" )( input )?;
+  let (input, b)     = p_term_prec( Prec::weakest( ) )( input )?;
+  let (input, _)     = lex_symbol_if( |x| x == "}" )( input )?;
+
+  Ok( (input, Term::Sigma( Box::new( a ), Bind::bind( &FreeName::Text( name.to_owned( ) ), Box::new( b ) ) ) ) )
 }
 
 pub fn p_decl( input: Span ) -> IResult< Span, Decl< String > > {
@@ -329,10 +425,10 @@ pub fn p_decl( input: Span ) -> IResult< Span, Decl< String > > {
   let (input, t) = lex_symbol_if( |x| x == ":" || x == "=" )( input )?;
 
   if t == ":" { // type signature
-    let (input, y) = p_term3( input )?;
+    let (input, y) = p_term_prec( Prec::Arrow )( input )?;
     Ok( (input, Decl::TypeSig( name.to_owned( ), y ) ) )
   } else { // function definition
-    let (input, y) = p_term4( input )?;
+    let (input, y) = p_term_prec( Prec::weakest( ) )( input )?;
     Ok( (input, Decl::Def( name.to_owned( ), y ) ) )
   }
 }

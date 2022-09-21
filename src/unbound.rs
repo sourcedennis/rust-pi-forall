@@ -93,7 +93,7 @@ pub trait LocallyNameless {
 }
 
 pub trait Subst< T > {
-  fn subst( self, x: Name, t: T ) -> Self;
+  fn subst( self, x: &Name, t: T ) -> Self;
 }
 
 impl< T: LocallyNameless > LocallyNameless for Box< T > {
@@ -134,12 +134,12 @@ impl< T > Bind< T > {
 }
 
 impl< T1, T2: Subst< T1 > > Subst< T1 > for Bind< T2 > {
-  fn subst( self, n: Name, t: T1 ) -> Bind< T2 > {
+  fn subst( self, n: &Name, t: T1 ) -> Bind< T2 > {
     match n {
       Name::Bound( BoundName( de_bruijn_index ) ) =>
-        Bind( self.0.subst( Name::Bound( BoundName( de_bruijn_index + 1 ) ), t ) ),
-      Name::Free( n ) =>
-        Bind( self.0.subst( Name::Free( n ), t ) )
+        Bind( self.0.subst( &Name::Bound( BoundName( de_bruijn_index + 1 ) ), t ) ),
+      Name::Free( _ ) =>
+        Bind( self.0.subst( n, t ) )
     }
   }
 }
@@ -184,7 +184,7 @@ impl< T: LocallyNameless > Bind< T > {
 
   pub fn instantiate< T2 >( self, t: T2 ) -> T
     where T: Subst< T2 > {
-    self.0.subst( Name::Bound( BoundName( 0 ) ), t )
+    self.0.subst( &Name::Bound( BoundName( 0 ) ), t )
   }
 
   // /// This is generally a bad idea.
