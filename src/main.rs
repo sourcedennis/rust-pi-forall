@@ -1,7 +1,10 @@
 mod unbound;
 mod syntax;
+mod pretty_print;
 mod parser;
 mod typecheck;
+mod equal;
+mod environment;
 
 // stdlib imports
 use std::env;

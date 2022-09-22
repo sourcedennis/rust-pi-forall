@@ -12,7 +12,8 @@ use nom::{
 use nom_locate::LocatedSpan;
 // local imports
 use crate::unbound::{FreeName, Name, Bind};
-use crate::syntax::{Module, Decl, Term, Prec, RESERVED};
+use crate::syntax::{Module, Decl, Term, Prec};
+use crate::pretty_print::{RESERVED};
 
 
 type Span< 'a > = LocatedSpan< &'a str >;

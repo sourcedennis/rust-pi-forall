@@ -1,102 +1,12 @@
 
-// stdlib imports
-use std::collections::HashMap;
 // local imports
-use crate::{
-  unbound::{FreshVar, Name, FreeName, Bind},
-  syntax::{Term, Type, Module, Decl, NameEnvBuilder, EnvDisplay}
-};
+use crate::unbound::{FreshVar, Name, FreeName, Bind};
+use crate::syntax::{Term, Type, Module, Decl};
+use crate::environment::{Env, Ctx};
+use crate::equal::{whnf};
+
 
 type ErrorMsg = String;
-
-
-/// Definitions that have been typechecked
-/// 
-/// We store both types and terms. Terms are sometimes required when expanding
-/// their definitions when used elsewhere. Terms can be missing.
-#[derive(Clone, Debug)]
-pub struct Ctx( HashMap< FreeName, (Option< Term >, Type) > );
-
-impl Ctx {
-  pub fn new( ) -> Ctx {
-    Ctx( HashMap::new( ) )
-  }
-
-  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
-    if let Some( ( _, t_type ) ) = self.0.get( n ) {
-      Some( t_type )
-    } else {
-      None
-    }
-  }
-
-  pub fn lookup_def( &self, n: &FreeName ) -> Option< &Term > {
-    if let Some( ( Some( t ), _ ) ) = self.0.get( n ) {
-      Some( t )
-    } else {
-      None
-    }
-  }
-
-  ///
-  /// Warning: This overrides the previous definition with the same name.
-  pub fn extend( &mut self, n: FreeName, term: Option< Term >, term_type: Type ) {
-    self.0.insert( n, (term, term_type) );
-  }
-}
-
-
-/// An environment used during typechecking. It contains both type-checked
-/// terms with their types, and (unchecked) type hints that were obtained from
-/// the source.
-#[derive(Clone, Debug)]
-pub struct Env {
-  /// Definitions that have been typechecked
-  ctx  : Ctx,
-
-  /// Type hints provided in the source, e.g.:
-  /// f : Nat -> Nat
-  hints : HashMap< FreeName, Type >
-}
-
-#[allow(dead_code)]
-impl Env {
-  pub fn new( ) -> Env {
-    Env {
-      ctx: Ctx::new( ),
-      hints: HashMap::new( )
-    }
-  }
-
-  pub fn lookup_hint( &self, n: &FreeName ) -> Option< &Type > {
-    self.hints.get( n )
-  }
-
-  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
-    self.ctx.lookup_type( n )
-  }
-
-  pub fn lookup_def( &self, n: &FreeName ) -> Option< &Term > {
-    self.ctx.lookup_def( n )
-  }
-
-  ///
-  /// Warning: This overrides the previous definition with the same name.
-  pub fn extend( &mut self, n: FreeName, term: Term, term_type: Type ) {
-    self.ctx.extend( n, Some( term ), term_type );
-  }
-
-  ///
-  /// Warning: This overrides the previous definition with the same name.
-  pub fn extend_type( &mut self, n: FreeName, term_type: Type ) {
-    self.ctx.extend( n, None, term_type );
-  }
-
-  pub fn add_hint( &mut self, n: FreeName, t: Type ) {
-    self.hints.insert( n, t );
-  }
-}
-
 
 pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx, ErrorMsg > {
   let mut env = Env::new( );
@@ -126,7 +36,7 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
     }
   }
 
-  Ok( env.ctx )
+  Ok( env.into( ) )
 }
 
 fn tc_type< Fresh: FreshVar >(
@@ -244,11 +154,12 @@ fn tc_term< Fresh: FreshVar >(
       let (y_name, body) = bnd1.unbind( fresh_env );
 
       let p_ty = tc_term( fresh_env, env, p, None )?;
-      // TODO: WHNF p_ty
+      let p_ty = whnf( env, p_ty );
+
       match p_ty {
         Term::Sigma( x_ty, s_bnd ) => {
           let y_ty = s_bnd.instantiate( &Term::Var( Name::Free( x_name.clone( ) ) ) );
-          // TODO: Maybe, p ~ (x_name, y_name)
+          // TODO: Maybe, (x_name, y_name) ~ p
           
           let mut env2 = env.clone( );
           env2.extend_type( x_name, *x_ty );
@@ -276,37 +187,5 @@ fn tc_term< Fresh: FreshVar >(
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::LetPair( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
-  }
-}
-
-use std::fmt::{Display, Formatter};
-
-impl Display for Ctx {
-  fn fmt( &self, f: &mut Formatter<'_> ) -> std::fmt::Result {
-    let mut env_builder = NameEnvBuilder::new( );
-
-    // Reserve the module-level names
-    for name in self.0.keys( ) {
-      if let FreeName::Text( n ) = name {
-        env_builder.reserve( n.clone( ) );
-      }
-    }
-
-    let mut name_env = env_builder.build( );
-
-    for (name, (m_term, term_type)) in &self.0 {
-      write!( f, "{} : ", name_env.free_name_string( name ) )?;
-      term_type.fmt( &mut name_env, f )?;
-      writeln!( f )?;
-
-      if let Some( term ) = m_term {
-        write!( f, "{} = ", name_env.free_name_string( name ) )?;
-        term.fmt( &mut name_env, f )?;
-        writeln!( f )?;
-      }
-      writeln!( f )?;
-    }
-
-    Ok( () )
   }
 }
