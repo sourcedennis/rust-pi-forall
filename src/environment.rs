@@ -1,10 +1,10 @@
 
+use std::slice::Iter;
+
 // stdlib imports
-use std::collections::HashMap;
-use std::collections::hash_map::{Keys, Iter};
 // local imports
 use crate::unbound::FreeName;
-use crate::syntax::{Term, Type};
+use crate::syntax::{Term, Type, Decl};
 
 
 /// Definitions that have been typechecked
@@ -12,41 +12,52 @@ use crate::syntax::{Term, Type};
 /// We store both types and terms. Terms are sometimes required when expanding
 /// their definitions when used elsewhere. Terms can be missing.
 #[derive(Clone, Debug)]
-pub struct Ctx( HashMap< FreeName, (Option< Term >, Type) > );
+pub struct Ctx( Vec< Decl< FreeName > > );
+
+fn map_maybe_last< A, B, F >( f: F, xs: &[A] ) -> Option< &B >
+where
+  F: Fn( &A ) -> Option< &B >
+{
+  
+  for x in xs.iter( ).rev( ) {
+    if let Some( y ) = f( x ) {
+      return Some( y );
+    }
+  }
+  None
+}
 
 impl Ctx {
   pub fn new( ) -> Ctx {
-    Ctx( HashMap::new( ) )
+    Ctx( Vec::new( ) )
   }
 
-  pub fn names< 'a >( &'a self ) -> Keys<'a, FreeName, (Option< Term >, Type)> {
-    self.0.keys( )
-  }
-
-  pub fn iter< 'a >( &'a self ) -> Iter<'a, FreeName, (Option< Term >, Type)> {
+  pub fn iter< 'a >( &'a self ) -> Iter<'a, Decl<FreeName>> {
     self.0.iter( )
   }
 
   pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
-    if let Some( ( _, t_type ) ) = self.0.get( n ) {
-      Some( t_type )
-    } else {
-      None
-    }
+    map_maybe_last( |x|
+      x.type_sig( )
+        .filter( |(name, _)| *name == n )
+        .map( |(_, ty)| ty ),
+      &self.0
+    )
   }
 
   pub fn lookup_def( &self, n: &FreeName ) -> Option< &Term > {
-    if let Some( ( Some( t ), _ ) ) = self.0.get( n ) {
-      Some( t )
-    } else {
-      None
-    }
+    map_maybe_last( |x|
+      x.def( )
+        .filter( |(name, _)| *name == n )
+        .map( |(_, ty)| ty ),
+      &self.0
+    )
   }
 
   ///
   /// Warning: This overrides the previous definition with the same name.
-  pub fn extend( &mut self, n: FreeName, term: Option< Term >, term_type: Type ) {
-    self.0.insert( n, (term, term_type) );
+  pub fn extend( &mut self, decl: Decl< FreeName > ) {
+    self.0.push( decl );
   }
 }
 
@@ -61,7 +72,7 @@ pub struct Env {
 
   /// Type hints provided in the source, e.g.:
   /// f : Nat -> Nat
-  hints : HashMap< FreeName, Type >
+  hints : Vec< (FreeName, Type) >
 }
 
 #[allow(dead_code)]
@@ -69,12 +80,19 @@ impl Env {
   pub fn new( ) -> Env {
     Env {
       ctx: Ctx::new( ),
-      hints: HashMap::new( )
+      hints: Vec::new( )
     }
   }
 
   pub fn lookup_hint( &self, n: &FreeName ) -> Option< &Type > {
-    self.hints.get( n )
+    map_maybe_last( |(name, t)|
+      if name == n {
+        Some( t )
+      } else {
+        None
+      },
+      &self.hints
+    )
   }
 
   pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
@@ -87,18 +105,12 @@ impl Env {
 
   ///
   /// Warning: This overrides the previous definition with the same name.
-  pub fn extend( &mut self, n: FreeName, term: Term, term_type: Type ) {
-    self.ctx.extend( n, Some( term ), term_type );
-  }
-
-  ///
-  /// Warning: This overrides the previous definition with the same name.
-  pub fn extend_type( &mut self, n: FreeName, term_type: Type ) {
-    self.ctx.extend( n, None, term_type );
+  pub fn extend( &mut self, decl: Decl< FreeName > ) {
+    self.ctx.extend( decl );
   }
 
   pub fn add_hint( &mut self, n: FreeName, t: Type ) {
-    self.hints.insert( n, t );
+    self.hints.push( (n, t) );
   }
 }
 

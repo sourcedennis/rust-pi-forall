@@ -24,13 +24,15 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
           return Err( format!( "Multiple definitions of {}", name ) );
         } else if let Some( ty_hint ) = env.lookup_hint( &fname ) {
           let mut env2 = env.clone( );
-          env2.extend_type( fname.clone( ), ty_hint.clone( ) );
+          env2.extend( Decl::TypeSig( fname.clone( ), ty_hint.clone( ) ) );
           let term_type = tc_term( fresh_env, &env2, &term, Some( ty_hint.clone( ) ) )?;
 
-          env.extend( fname, term.clone( ), term_type );
+          env.extend( Decl::TypeSig( fname.clone( ), term_type.clone( ) ) );
+          env.extend( Decl::Def( fname, term.clone( ) ) );
         } else {
           let term_type = tc_term( fresh_env, &env, &term, None )?;
-          env.extend( fname, term.clone( ), term_type );
+          env.extend( Decl::TypeSig( fname.clone( ), term_type ) );
+          env.extend( Decl::Def( fname, term.clone( ) ) );
         }
       }
     }
@@ -84,7 +86,7 @@ fn tc_term< Fresh: FreshVar >(
       tc_type( fresh_env, env, ty_a )?; // Check: Γ ⊢ A : Type
       
       let mut env2: Env = env.clone( );
-      env2.extend_type( x, *ty_a.clone( ) );
+      env2.extend( Decl::TypeSig( x, *ty_a.clone( ) ) );
       tc_type( fresh_env, &env2, &ty_b )?; // Check: Γ,(x:A) ⊢ B : Type
 
       Ok( Term::Type ) // Then: Γ ⊢ (x : A) -> B : Type
@@ -94,7 +96,7 @@ fn tc_term< Fresh: FreshVar >(
 
       // Check: Γ,(x:A) ⊢ body : B
       let mut env2 = env.clone( );
-      env2.extend_type( x, *ty_a.clone( ) );
+      env2.extend( Decl::TypeSig( x, *ty_a.clone( ) ) );
       tc_term( fresh_env, &env2, &body, Some( *ty_b ) )?;
 
       Ok( Term::Pi( ty_a.clone( ), bnd2 ) )
@@ -129,7 +131,7 @@ fn tc_term< Fresh: FreshVar >(
       let (x, y_ty) = bnd.clone( ).unbind( fresh_env );
 
       let mut env2 = env.clone( );
-      env2.extend_type( x, *x_ty.clone( ) );
+      env2.extend( Decl::TypeSig( x, *x_ty.clone( ) ) );
       // Check:  Γ,(x:x_ty) ⊢ y_ty : Type
       tc_type( fresh_env, &env2, &y_ty )?;
 
@@ -142,7 +144,8 @@ fn tc_term< Fresh: FreshVar >(
       tc_term( fresh_env, env, x, Some( *x_ty.clone( ) ) )?;
 
       let mut env2 = env.clone( );
-      env2.extend( x_name.clone( ), *x.clone( ), *x_ty.clone( ) );
+      env2.extend( Decl::TypeSig( x_name.clone( ), *x_ty.clone( ) ) );
+      env2.extend( Decl::Def( x_name.clone( ), *x.clone( ) ) );
       tc_term( fresh_env, &env2, y, Some( *y_ty.clone( ) ) )?;
       
       Ok( Term::Sigma( x_ty, Bind::bind( &x_name, y_ty ) ) )
@@ -162,8 +165,8 @@ fn tc_term< Fresh: FreshVar >(
           // TODO: Maybe, (x_name, y_name) ~ p
           
           let mut env2 = env.clone( );
-          env2.extend_type( x_name, *x_ty );
-          env2.extend_type( y_name, *y_ty );
+          env2.extend( Decl::TypeSig( x_name, *x_ty ) );
+          env2.extend( Decl::TypeSig( y_name, *y_ty ) );
           let ty = tc_term( fresh_env, &env2, &body, Some( ty ) )?; // Why is this checked? Can't we infer it?
 
           Ok( ty )

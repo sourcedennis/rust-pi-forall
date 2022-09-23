@@ -323,26 +323,27 @@ impl Display for Ctx {
   fn fmt( &self, f: &mut Formatter<'_> ) -> std::fmt::Result {
     let mut env_builder = NameEnvBuilder::new( );
 
-    // Reserve the module-level names
-    for name in self.names( ) {
-      if let FreeName::Text( n ) = name {
+    for decl in self.iter( ) {
+      if let FreeName::Text( n ) = decl.name( ) {
         env_builder.reserve( n.clone( ) );
       }
     }
 
     let mut name_env = env_builder.build( );
 
-    for (name, (m_term, term_type)) in self.iter( ) {
-      write!( f, "{} : ", name_env.free_name_string( name ) )?;
-      term_type.fmt( &mut name_env, f )?;
-      writeln!( f )?;
-
-      if let Some( term ) = m_term {
-        write!( f, "{} = ", name_env.free_name_string( name ) )?;
-        term.fmt( &mut name_env, f )?;
-        writeln!( f )?;
+    for decl in self.iter( ) {
+      match decl {
+        Decl::Def( name, term ) => {
+          write!( f, "{} = ", name_env.free_name_string( name ) )?;
+          term.fmt( &mut name_env, f )?;
+          writeln!( f )?;
+        },
+        Decl::TypeSig( name, ttype ) => {
+          write!( f, "{} : ", name_env.free_name_string( name ) )?;
+          ttype.fmt( &mut name_env, f )?;
+          writeln!( f )?;
+        }
       }
-      writeln!( f )?;
     }
 
     Ok( () )

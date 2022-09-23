@@ -312,6 +312,29 @@ impl< N > Decl< N > {
       _ => false
     }
   }
+
+  pub fn name( &self ) -> &N {
+    match self {
+      Decl::Def( n, _ ) => n,
+      Decl::TypeSig( n, _ ) => n
+    }
+  }
+
+  pub fn def( &self ) -> Option< (&N, &Term) > {
+    if let Decl::Def( n, t ) = self {
+      Some( (n, t) )
+    } else {
+      None
+    }
+  }
+
+  pub fn type_sig( &self ) -> Option< (&N, &Term) > {
+    if let Decl::TypeSig( n, t ) = self {
+      Some( (n, t) )
+    } else {
+      None
+    }
+  }
 }
 
 #[derive(Debug)]
