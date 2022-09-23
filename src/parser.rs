@@ -42,8 +42,8 @@ where
 #[must_use]
 fn lex_word( input: Span ) -> IResult< Span, () > {
   // this is actually: [a-zA-Z]* [a-zA-Z0-9]* but ambiguity is irrelevant
-  let (input, _) = take_while1( |c:char| c.is_alphabetic( ) || c == '_' )( input )?;
-  let (input, _) = take_while( |c:char| c.is_alphanumeric( ) || c == '_' )( input )?;
+  let (input, _) = take_while1( |c:char| c.is_alphabetic( ) || c == '_' || c == '\'' )( input )?;
+  let (input, _) = take_while( |c:char| c.is_alphanumeric( ) || c == '_' || c == '\'' )( input )?;
   Ok( (input, ()) )
 }
 
@@ -53,6 +53,7 @@ fn lex_symbol( input: Span ) -> IResult< Span, () > {
     alt(
       (
         tag( "\\" ), // for lambdas
+        tag( "()" ),
         tag( "(" ),
         tag( ")" ),
         tag( "->" ),
@@ -213,8 +214,8 @@ fn p_term_prec< 'a >( prec: Prec )
 
   match prec {
     Prec::Colon      => p_term_colon,
-    Prec::Arrow      => p_term_arrow,
     Prec::Lambda     => p_term_lambda,
+    Prec::Arrow      => p_term_arrow,
     Prec::IfThenElse => p_term_iflet,
     Prec::App        => p_term_app,
     Prec::Atom       => p_term_atom
@@ -380,6 +381,8 @@ pub fn p_term_atom< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
       map( lex_word_if( |x| x == "Bool" ), |_| Term::TyBool ),
       map( lex_word_if( |x| x == "True" ), |_| Term::LitBool( true ) ),
       map( lex_word_if( |x| x == "False" ), |_| Term::LitBool( false ) ),
+      map( lex_symbol_if( |x| x == "()" ), |_| Term::LitUnit ),
+      map( lex_word_if( |x| x == "Unit" ), |_| Term::TyUnit ),
       map( p_identifier, |x| Term::Var( Name::Free( FreeName::Text( x.to_owned( ) ) ) ) ),
       p_sigma_type,
       p_tuple

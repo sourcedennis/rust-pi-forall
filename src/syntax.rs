@@ -20,6 +20,10 @@ pub enum Term {
   Pi( Box< Type >, Bind< Box< Type > > ),
   /// Annotated terms ( a : A )
   Ann( Box< Term >, Box< Type > ),
+  /// 
+  TyUnit,
+  ///
+  LitUnit,
   ///
   TyBool,
   ///
@@ -61,6 +65,8 @@ impl Term {
         let v = x.visit_preorder( f, v );
         y.visit_preorder( f, v )
       },
+      Term::TyUnit => f( &self, v ),
+      Term::LitUnit => f( &self, v ),
       Term::TyBool => f( &self, v ),
       Term::LitBool( _ ) => f( &self, v ),
       Term::If( cond, x, y ) => {
@@ -100,6 +106,8 @@ impl Term {
           rec( level, x ) || rec( level, y ),
         Term::Pi( x, y ) => rec( level, x ) || rec( level + 1, y.term( ) ),
         Term::Ann( x, y ) => rec( level, x ) || rec( level, y ),
+        Term::TyUnit => false,
+        Term::LitUnit => false,
         Term::TyBool => false,
         Term::LitBool( _ ) => false,
         Term::If( cond, x, y ) => rec( level, cond ) || rec( level, x ) || rec( level, y ),
@@ -140,6 +148,8 @@ impl Subst< &Term > for Term {
       Term::App( x, y ) => Term::App( x.subst( name, t ), y.subst( name, t ) ),
       Term::Pi( x, y ) => Term::Pi( x.subst( name, t ), y.subst( name, t ) ),
       Term::Ann( x, x_type ) => Term::Ann( x.subst( name, t ), x_type.subst( name, t ) ),
+      Term::TyUnit => self,
+      Term::LitUnit => self,
       Term::TyBool => self,
       Term::LitBool( _ ) => self,
       Term::If( cond, x, y ) => Term::If( cond.subst( name, t ), x.subst( name, t ), y.subst( name, t ) ),
@@ -166,6 +176,8 @@ impl LocallyNameless for Term {
       Term::App( x, y ) => Term::App( x.open( level, new ), y.open( level, new ) ),
       Term::Pi( a, f ) => Term::Pi( a.open( level, new ), f.open( level, new ) ),
       Term::Ann( x, y ) => Term::Ann( x.open( level, new ), y.open( level, new ) ),
+      Term::TyUnit => self,
+      Term::LitUnit => self,
       Term::TyBool => self,
       Term::LitBool( _ ) => self,
       Term::If( cond, x, y ) => Term::If( cond.open( level, new ), x.open( level, new ), y.open( level, new ) ),
@@ -190,6 +202,8 @@ impl LocallyNameless for Term {
       Term::App( x, y ) => Term::App( x.close( level, old ), y.close( level, old ) ),
       Term::Pi( a, f ) => Term::Pi( a.close( level, old ), f.close( level, old ) ),
       Term::Ann( x, y ) => Term::Ann( x.close( level, old ), y.close( level, old ) ),
+      Term::TyUnit => self,
+      Term::LitUnit => self,
       Term::TyBool => self,
       Term::LitBool( _ ) => self,
       Term::If( cond, x, y ) => Term::If( cond.close( level, old ), x.close( level, old ), y.close( level, old ) ),
@@ -216,6 +230,8 @@ impl Term {
         x0.aeq( x1 ) && y0.term( ).aeq( y1.term( ) ),
       (Term::TyBool, Term::TyBool ) => true,
       (Term::LitBool( b1 ), Term::LitBool( b2 ) ) => ( b1 == b2 ),
+      (Term::TyUnit, Term::TyUnit) => true,
+      (Term::LitUnit, Term::LitUnit) => true,
       (Term::If( c1, x1, y1 ), Term::If( c2, x2, y2 ) ) =>
         c1.aeq( c2 ) && x1.aeq( x2 ) && y1.aeq( y2 ),
       (Term::Sigma( x1, bnd1 ), Term::Sigma( x2, bnd2 ) ) =>
@@ -238,6 +254,8 @@ impl Term {
       Term::Ann( _, _ ) => Prec::Colon,
       Term::TyBool => Prec::Atom,
       Term::LitBool( _ ) => Prec::Atom,
+      Term::TyUnit => Prec::Atom,
+      Term::LitUnit => Prec::Atom,
       Term::If( _, _, _ ) => Prec::IfThenElse,
       Term::Sigma( _, _ ) => Prec::Atom,
       Term::Prod( _, _ ) => Prec::Atom,
@@ -248,8 +266,8 @@ impl Term {
 
 pub enum Prec {
   Colon, // weakest
-  Arrow,
   Lambda,
+  Arrow,
   IfThenElse, // also let-binding
   App,
   Atom // Strongest
@@ -263,9 +281,9 @@ impl Prec {
   /// Returns the next stronger precedence
   pub fn inc( &self ) -> Prec {
     match self {
-      Prec::Colon => Prec::Arrow,
-      Prec::Arrow => Prec::Lambda,
-      Prec::Lambda => Prec::IfThenElse,
+      Prec::Colon => Prec::Lambda,
+      Prec::Lambda => Prec::Arrow,
+      Prec::Arrow => Prec::IfThenElse,
       Prec::IfThenElse => Prec::App,
       Prec::App => Prec::Atom,
       Prec::Atom => Prec::Atom // fix point
@@ -281,8 +299,8 @@ impl Prec {
   fn val( &self ) -> usize {
     match self {
       Prec::Colon      => 0,
-      Prec::Arrow      => 1,
-      Prec::Lambda     => 2,
+      Prec::Lambda     => 1,
+      Prec::Arrow      => 2,
       Prec::IfThenElse => 3,
       Prec::App        => 4,
       Prec::Atom       => 5

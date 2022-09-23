@@ -8,7 +8,11 @@ use crate::syntax::*;
 use crate::environment::Ctx;
 
 
-pub const RESERVED: &[&'static str] = &[ "Type", "Bool", "True", "False", "if", "then", "else", "let", "in" ];
+pub const RESERVED: &[&'static str] =
+  &[ "Type", "Bool", "True", "False",
+     "if", "then", "else", "let", "in",
+     "Unit"
+    ];
 
 /// A builder for `NameEnv`. We want to ensure `reserve` is *not* called after
 /// fresh names are dispatched.
@@ -192,6 +196,8 @@ impl EnvDisplay for Term {
           rec_bracket( env, bound_names, b.term( ), Prec::Arrow, f )?;
           bound_names.pop( );
         },
+        Term::TyUnit => write!( f, "Unit" )?,
+        Term::LitUnit => write!( f, "()" )?,
         Term::TyBool => write!( f, "Bool" )?,
         Term::LitBool( true )  => write!( f, "True" )?,
         Term::LitBool( false ) => write!( f, "False" )?,

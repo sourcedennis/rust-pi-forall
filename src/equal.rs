@@ -107,6 +107,8 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
     Term::Pi( _, _ ) => t,
     Term::TyBool => t,
     Term::LitBool( _ ) => t,
+    Term::TyUnit => t,
+    Term::LitUnit => t,
     Term::Sigma( _, _ ) => t,
     Term::Prod( _, _ ) => t,
   }

@@ -3,7 +3,7 @@
 use crate::unbound::{FreshVar, Name, FreeName, Bind};
 use crate::syntax::{Term, Type, Module, Decl};
 use crate::environment::{Env, Ctx};
-use crate::equal::{whnf};
+use crate::equal::{whnf, equate};
 
 
 type ErrorMsg = String;
@@ -25,9 +25,9 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
         } else if let Some( ty_hint ) = env.lookup_hint( &fname ) {
           let mut env2 = env.clone( );
           env2.extend( Decl::TypeSig( fname.clone( ), ty_hint.clone( ) ) );
-          let term_type = tc_term( fresh_env, &env2, &term, Some( ty_hint.clone( ) ) )?;
+          check_type( fresh_env, &env2, &term, ty_hint.clone( ) )?;
 
-          env.extend( Decl::TypeSig( fname.clone( ), term_type.clone( ) ) );
+          env.extend( Decl::TypeSig( fname.clone( ), ty_hint.clone( ) ) );
           env.extend( Decl::Def( fname, term.clone( ) ) );
         } else {
           let term_type = tc_term( fresh_env, &env, &term, None )?;
@@ -41,21 +41,35 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
   Ok( env.into( ) )
 }
 
-fn tc_type< Fresh: FreshVar >(
-  fresh_env: &mut Fresh,
-  env: &Env,
-  t: &Term
-) -> Result< (), ErrorMsg > {
-  tc_term( fresh_env, env, t, Some( Term::Type ) )?;
-  Ok( () )
-}
-
 fn ensure_pi( t: Term ) -> Result< (Term, Bind<Term>), ErrorMsg > {
   match t {
     Term::Pi( ty_a, bnd ) => Ok( ( *ty_a, bnd.unbox() ) ),
     Term::Ann( t , _ ) => ensure_pi( *t ),
     _ => Err( format!( "Expected a function type but found {:?}", t ) )
   }
+}
+
+fn check_type< Fresh: FreshVar >(
+  fresh_env: &mut Fresh,
+  env: &Env,
+  t: &Term,
+  t_type: Type
+) -> Result< (), ErrorMsg > {
+  // Convert the type to WHNF. Consider:
+  // f : Bool -> Type
+  // g : f True
+  // g = \x . ...
+  // The lambda must have a pi-type, which it doesn't, unless we whnf `f True`.
+  tc_term( fresh_env, env, t, Some( whnf( env, t_type.clone( ) ) ) )?;
+  Ok( () )
+}
+
+fn tc_type< Fresh: FreshVar >(
+  fresh_env: &mut Fresh,
+  env: &Env,
+  t: &Term
+) -> Result< (), ErrorMsg > {
+  check_type( fresh_env, env, t, Term::Type )
 }
 
 /// Either typecheck (if `t_type.is_some()`) or perform type inference (when
@@ -97,7 +111,7 @@ fn tc_term< Fresh: FreshVar >(
       // Check: Γ,(x:A) ⊢ body : B
       let mut env2 = env.clone( );
       env2.extend( Decl::TypeSig( x, *ty_a.clone( ) ) );
-      tc_term( fresh_env, &env2, &body, Some( *ty_b ) )?;
+      check_type( fresh_env, &env2, &body, *ty_b )?;
 
       Ok( Term::Pi( ty_a.clone( ), bnd2 ) )
     },
@@ -107,22 +121,47 @@ fn tc_term< Fresh: FreshVar >(
       let ty1 = tc_term( fresh_env, env, t1, None )?;
       let (ty_a, bnd) = ensure_pi( ty1 )?;
       // Check:  Γ ⊢ t2 : A
-      tc_term( fresh_env, env, t2, Some( ty_a ) )?;
+      check_type( fresh_env, env, t2, ty_a )?;
 
       Ok( bnd.instantiate( t2 ) )
     },
     (Term::Ann( tm, ty ), None) => {
       tc_type( fresh_env, env, ty )?;
-      tc_term( fresh_env, env, tm, Some( *ty.clone( ) ) )?;
+      check_type( fresh_env, env, tm, *ty.clone( ) )?;
       Ok( *ty.clone( ) )
     },
+    (Term::TyUnit, None) => Ok( Term::Type ),
+    (Term::LitUnit, None) => Ok( Term::TyUnit ),
     (Term::TyBool, None) => Ok( Term::Type ),
     (Term::LitBool( _ ), None) => Ok( Term::TyBool ),
+    (Term::If( cond, x, y ), Some( ty )) => {
+      check_type( fresh_env, env, cond, Term::TyBool )?;
+
+      if let Some( dtrue ) = def( env, *cond.clone( ), Term::LitBool( true ) ) {
+        // Context-sensitive checking true branch
+        let mut env2 = env.clone( );
+        env2.extend( dtrue );
+        check_type( fresh_env, &env2, x, ty.clone( ) )?;
+      } else {
+        check_type( fresh_env, env, x, ty.clone( ) )?;
+      }
+
+      if let Some( dfalse ) = def( env, *cond.clone( ), Term::LitBool( false ) ) {
+        // Context-sensitive checking false branch
+        let mut env2 = env.clone( );
+        env2.extend( dfalse );
+        check_type( fresh_env, &env2, y, ty.clone( ) )?;
+      } else {
+        check_type( fresh_env, env, y, ty.clone( ) )?;
+      }
+
+      Ok( ty )
+    },
     (Term::If( cond, x, y ), None) => {
-      tc_term( fresh_env, env, cond, Some( Term::TyBool ) )?;
+      check_type( fresh_env, env, cond, Term::TyBool )?;
       let x_ty = tc_term( fresh_env, env, x, None )?; // infer
-      let y_ty = tc_term( fresh_env, env, y, Some( x_ty ) )?; // check
-      Ok( y_ty )
+      check_type( fresh_env, env, y, x_ty.clone( ) )?; // check
+      Ok( x_ty )
     },
     (Term::Sigma( x_ty, bnd ), None) => {
       // Check:  Γ ⊢ x_ty : Type
@@ -141,12 +180,12 @@ fn tc_term< Fresh: FreshVar >(
     (Term::Prod( x, y ), Some( Term::Sigma( x_ty, bnd ) ) ) => {
       let (x_name, y_ty) = bnd.unbind( fresh_env );
 
-      tc_term( fresh_env, env, x, Some( *x_ty.clone( ) ) )?;
+      check_type( fresh_env, env, x, *x_ty.clone( ) )?;
 
       let mut env2 = env.clone( );
       env2.extend( Decl::TypeSig( x_name.clone( ), *x_ty.clone( ) ) );
       env2.extend( Decl::Def( x_name.clone( ), *x.clone( ) ) );
-      tc_term( fresh_env, &env2, y, Some( *y_ty.clone( ) ) )?;
+      check_type( fresh_env, &env2, y, *y_ty.clone( ) )?;
       
       Ok( Term::Sigma( x_ty, Bind::bind( &x_name, y_ty ) ) )
     },
@@ -162,12 +201,18 @@ fn tc_term< Fresh: FreshVar >(
       match p_ty {
         Term::Sigma( x_ty, s_bnd ) => {
           let y_ty = s_bnd.instantiate( &Term::Var( Name::Free( x_name.clone( ) ) ) );
-          // TODO: Maybe, (x_name, y_name) ~ p
+          let decl = def( env, *p.clone( ),
+            Term::Prod(
+              Box::new( Term::Var( Name::Free( x_name.clone( ) ) ) ),
+              Box::new( Term::Var( Name::Free( y_name.clone( ) ) ) ) ) );
           
           let mut env2 = env.clone( );
           env2.extend( Decl::TypeSig( x_name, *x_ty ) );
           env2.extend( Decl::TypeSig( y_name, *y_ty ) );
-          let ty = tc_term( fresh_env, &env2, &body, Some( ty ) )?; // Why is this checked? Can't we infer it?
+          if let Some( decl ) = decl {
+            env2.extend( decl );
+          }
+          check_type( fresh_env, &env2, &body, ty.clone( ) )?; // Why is this checked? Can't we infer it?
 
           Ok( ty )
         },
@@ -178,11 +223,8 @@ fn tc_term< Fresh: FreshVar >(
       Err( format!( "Products must have a Sigma Type, not {:?}", ty ) ),
     (tm, Some( ty ) ) => {
       let ty2 = tc_term( fresh_env, env, tm, None )?;
-      if !ty.aeq( &ty2 ) {
-        Err( format!( "Types don't match \"{:?}\" and \"{:?}\"", ty, ty2 ) )
-      } else {
-        Ok( ty )
-      }
+      equate( fresh_env, env, &ty, &ty2 )?;
+      Ok( ty )
     },
     (Term::Lam( _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
@@ -190,5 +232,24 @@ fn tc_term< Fresh: FreshVar >(
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::LetPair( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
+  }
+}
+
+fn def( env: &Env, x: Term, y: Term ) -> Option< Decl< FreeName > > {
+  let x = whnf( env, x );
+  let y = whnf( env, y );
+
+  match (x, y) {
+    (Term::Var( Name::Free( xn ) ), Term::Var( Name::Free( yn ) )) =>
+      if xn == yn {
+        None
+      } else {
+        Some( Decl::Def( xn, Term::Var( Name::Free( yn ) ) ) )
+      },
+    (Term::Var( Name::Free( xn ) ), y) =>
+      Some( Decl::Def( xn, y ) ),
+    (x, Term::Var( Name::Free( yn ) ) ) =>
+      Some( Decl::Def( yn, x ) ),
+    _ => None
   }
 }
