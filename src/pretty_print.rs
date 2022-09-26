@@ -11,7 +11,7 @@ use crate::environment::Ctx;
 pub const RESERVED: &[&'static str] =
   &[ "Type", "Bool", "True", "False",
      "if", "then", "else", "let", "in",
-     "Unit"
+     "Unit", "Refl", "subst", "by", "contra"
     ];
 
 /// A builder for `NameEnv`. We want to ensure `reserve` is *not* called after
@@ -234,15 +234,33 @@ impl EnvDisplay for Term {
           let n2 = env.fresh_name( );
           
           write!( f, "let ({},{}) = ", n1, n2 )?;
-          rec_bracket( env, bound_names, x, Prec::weakest( ), f )?;
+          rec_bracket( env, bound_names, x, Prec::IfThenElse.inc( ), f )?;
           write!( f, " in " )?;
 
           bound_names.push( n1 );
           bound_names.push( n2 );
-          rec_bracket( env, bound_names, bnd.term( ).term( ), Prec::weakest( ), f )?;
+          rec_bracket( env, bound_names, bnd.term( ).term( ), Prec::IfThenElse, f )?;
           bound_names.pop( );
           bound_names.pop( );
         },
+        Term::TyEq( x, y ) => {
+          rec_bracket( env, bound_names, x, Prec::Equality.inc( ), f )?;
+          write!( f, " = " )?;
+          rec_bracket( env, bound_names, y, Prec::Equality.inc( ), f )?;
+        },
+        Term::Refl => {
+          write!( f, "Refl" )?;
+        },
+        Term::Subst( x, pf ) => {
+          write!( f, "subst " )?;
+          rec_bracket( env, bound_names, x, Prec::IfThenElse.inc( ), f )?;
+          write!( f, " by " )?;
+          rec_bracket( env, bound_names, pf, Prec::IfThenElse.inc( ), f )?;
+        },
+        Term::Contra( x ) => {
+          write!( f, "contra " )?;
+          rec_bracket( env, bound_names, x, Prec::Atom, f )?;
+        }
         Term::Ann( x, y ) => {
           write!( f, "(" )?;
           rec_bracket( env, bound_names, x, Prec::Colon.inc( ), f )?;

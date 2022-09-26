@@ -41,11 +41,18 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
   Ok( env.into( ) )
 }
 
-fn ensure_pi( t: Term ) -> Result< (Term, Bind<Term>), ErrorMsg > {
-  match t {
+fn ensure_pi( env: &Env, t: Term ) -> Result< (Term, Bind<Term>), ErrorMsg > {
+  match whnf( env, t ) {
     Term::Pi( ty_a, bnd ) => Ok( ( *ty_a, bnd.unbox() ) ),
-    Term::Ann( t , _ ) => ensure_pi( *t ),
-    _ => Err( format!( "Expected a function type but found {:?}", t ) )
+    Term::Ann( t , _ ) => ensure_pi( env, *t ),
+    t => Err( format!( "Expected a function type but found {:?}", t ) )
+  }
+}
+
+fn ensure_tyeq( env: &Env, t: Term ) -> Result< (Term, Term), ErrorMsg > {
+  match whnf( env, t ) {
+    Term::TyEq( x, y ) => Ok( ( *x, *y ) ),
+    t => Err( format!( "Expected an equality type but found {:?}", t ) )
   }
 }
 
@@ -62,6 +69,14 @@ fn check_type< Fresh: FreshVar >(
   // The lambda must have a pi-type, which it doesn't, unless we whnf `f True`.
   tc_term( fresh_env, env, t, Some( whnf( env, t_type.clone( ) ) ) )?;
   Ok( () )
+}
+
+fn infer_type< Fresh: FreshVar >(
+  fresh_env: &mut Fresh,
+  env: &Env,
+  t: &Term
+) -> Result< Type, ErrorMsg > {
+  tc_term( fresh_env, env, t, None )
 }
 
 fn tc_type< Fresh: FreshVar >(
@@ -119,7 +134,7 @@ fn tc_term< Fresh: FreshVar >(
     (Term::App(t1, t2), None) => {
       // Infer:  Γ ⊢ t1 : (x : A) -> B
       let ty1 = tc_term( fresh_env, env, t1, None )?;
-      let (ty_a, bnd) = ensure_pi( ty1 )?;
+      let (ty_a, bnd) = ensure_pi( env, ty1 )?;
       // Check:  Γ ⊢ t2 : A
       check_type( fresh_env, env, t2, ty_a )?;
 
@@ -221,16 +236,68 @@ fn tc_term< Fresh: FreshVar >(
     },
     (Term::Prod( _, _ ), Some( ty ) ) =>
       Err( format!( "Products must have a Sigma Type, not {:?}", ty ) ),
+    (Term::TyEq( x, y ), None) => {
+      let x_ty = infer_type( fresh_env, env, x )?;
+      check_type( fresh_env, env, y, x_ty )?;
+      Ok( Term::Type )
+    },
+    (Term::Refl, Some( Term::TyEq( x_ty, y_ty ) ) ) => {
+      equate( fresh_env, env, &x_ty, &y_ty )?;
+      Ok( Term::TyEq( x_ty, y_ty ) )
+    },
+    // subst x by y : A
+    // where y : m = n
+    (Term::Subst( x, y ), Some( ty )) => {
+      let y_ty = infer_type( fresh_env, env, y )?;
+      let (m, n) = ensure_tyeq( env, y_ty )?;
+
+      let m_decl1 = def( env, m, n );
+      let m_decl2 = def( env, *y.clone( ), Term::Refl );
+
+      let mut env2: Env = env.clone( );
+      if let Some( decl1 ) = m_decl1 {
+        env2.extend( decl1 );
+      }
+      if let Some( decl2 ) = m_decl2 {
+        env2.extend( decl2 );
+      }
+
+      check_type( fresh_env, &env2, x, ty.clone( ) )?;
+      Ok( ty )
+    },
+    (Term::Contra( p ), Some( ty )) => {
+      let p_ty = infer_type( fresh_env, env, p )?;
+      let (x, y) = ensure_tyeq( env, p_ty )?;
+      let x = whnf( env, x );
+      let y = whnf( env, y );
+      
+      match (whnf( env, x ), whnf( env, y )) {
+        (Term::LitBool( b1 ), Term::LitBool( b2 ) ) => {
+          if b1 != b2 {
+            Ok( ty )
+          } else {
+            Err( "Not contradictory".to_owned( ) )
+          }
+        }
+        _ => Err( "Not contradictory".to_owned( ) )
+      }
+    },
     (tm, Some( ty ) ) => {
       let ty2 = tc_term( fresh_env, env, tm, None )?;
       equate( fresh_env, env, &ty, &ty2 )?;
       Ok( ty )
     },
+    (Term::Refl, None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
+    (Term::Subst( _, _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::Lam( _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::Prod( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::LetPair( _, _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
+    (Term::Contra( _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
   }
 }

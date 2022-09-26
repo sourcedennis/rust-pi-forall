@@ -36,7 +36,15 @@ pub enum Term {
   /// A pair. e.g., (x,y)
   Prod( Box< Term >, Box< Term > ),
   /// let (x,y) = a in b
-  LetPair( Box< Term >, Bind< Bind< Box< Term > > > )
+  LetPair( Box< Term >, Bind< Bind< Box< Term > > > ),
+  /// Equality type `a = b`
+  TyEq( Box< Term >, Box< Term > ),
+  /// Equality proof
+  Refl,
+  /// subst a by pf
+  Subst( Box< Term >, Box< Term > ),
+  /// equality contradiction
+  Contra( Box< Term > )
 }
 
 impl Term {
@@ -89,6 +97,21 @@ impl Term {
         let v = f( &self, v );
         let v = x.visit_preorder( f, v );
         bnd.term( ).term( ).visit_preorder( f, v )
+      },
+      Term::TyEq( x, y ) => {
+        let v = f( &self, v );
+        let v = x.visit_preorder( f, v );
+        y.visit_preorder( f, v )
+      },
+      Term::Refl => f( &self, v ),
+      Term::Subst( x, y ) => {
+        let v = f( &self, v );
+        let v = x.visit_preorder( f, v );
+        y.visit_preorder( f, v )
+      },
+      Term::Contra( x ) => {
+        let v = f( &self, v );
+        x.visit_preorder( f, v )
       }
     }
   }
@@ -113,7 +136,11 @@ impl Term {
         Term::If( cond, x, y ) => rec( level, cond ) || rec( level, x ) || rec( level, y ),
         Term::Sigma( x, bnd ) => rec( level, x ) || rec( level + 1, bnd.term( ) ),
         Term::Prod( x, y ) => rec( level, x ) || rec( level, y ),
-        Term::LetPair( x, bnd ) => rec( level, x ) || rec( level + 2, bnd.term( ).term( ) )
+        Term::LetPair( x, bnd ) => rec( level, x ) || rec( level + 2, bnd.term( ).term( ) ),
+        Term::TyEq( x, y ) => rec( level, x ) || rec( level, y ),
+        Term::Refl => false,
+        Term::Subst( x, y ) => rec( level, x ) || rec( level, y ),
+        Term::Contra( x ) => rec( level, x )
       }
     }
 
@@ -155,7 +182,11 @@ impl Subst< &Term > for Term {
       Term::If( cond, x, y ) => Term::If( cond.subst( name, t ), x.subst( name, t ), y.subst( name, t ) ),
       Term::Sigma( x, bnd ) => Term::Sigma( x.subst( name, t ), bnd.subst( name, t ) ),
       Term::Prod( x, y ) => Term::Prod( x.subst( name, t ), y.subst( name, t ) ),
-      Term::LetPair( x, bnd ) => Term::LetPair( x.subst( name, t ), bnd.subst( name, t ) )
+      Term::LetPair( x, bnd ) => Term::LetPair( x.subst( name, t ), bnd.subst( name, t ) ),
+      Term::TyEq( x, y ) => Term::TyEq( x.subst( name, t ), y.subst( name, t ) ),
+      Term::Refl => self,
+      Term::Subst( x, y ) => Term::Subst( x.subst( name, t ), y.subst( name, t ) ),
+      Term::Contra( x ) => Term::Contra( x.subst( name, t ) )
     }
   }
 }
@@ -183,7 +214,11 @@ impl LocallyNameless for Term {
       Term::If( cond, x, y ) => Term::If( cond.open( level, new ), x.open( level, new ), y.open( level, new ) ),
       Term::Sigma( x, bnd ) => Term::Sigma( x.open( level, new ), bnd.open( level, new ) ),
       Term::Prod( x, y ) => Term::Prod( x.open( level, new ), y.open( level, new ) ),
-      Term::LetPair( x, bnd ) => Term::LetPair( x.open( level, new ), bnd.open( level, new ) )
+      Term::LetPair( x, bnd ) => Term::LetPair( x.open( level, new ), bnd.open( level, new ) ),
+      Term::TyEq( x, y ) => Term::TyEq( x.open( level, new ), y.open( level, new ) ),
+      Term::Refl => self,
+      Term::Subst( x, y ) => Term::Subst( x.open( level, new ), y.open( level, new ) ),
+      Term::Contra( x ) => Term::Contra( x.open( level, new ) )
     }
   }
 
@@ -209,7 +244,11 @@ impl LocallyNameless for Term {
       Term::If( cond, x, y ) => Term::If( cond.close( level, old ), x.close( level, old ), y.close( level, old ) ),
       Term::Sigma( x, bnd ) => Term::Sigma( x.close( level, old ), bnd.close( level, old ) ),
       Term::Prod( x, y ) => Term::Prod( x.close( level, old ), y.close( level, old ) ),
-      Term::LetPair( x, bnd ) => Term::LetPair( x.close( level, old ), bnd.close( level, old ) )
+      Term::LetPair( x, bnd ) => Term::LetPair( x.close( level, old ), bnd.close( level, old ) ),
+      Term::TyEq( x, y ) => Term::TyEq( x.close( level, old ), y.close( level, old ) ),
+      Term::Refl => self,
+      Term::Subst( x, y ) => Term::Subst( x.close( level, old ), y.close( level, old ) ),
+      Term::Contra( x ) => Term::Contra( x.close( level, old ) )
     }
   }
 }
@@ -240,6 +279,13 @@ impl Term {
         x1.aeq( x2 ) && y1.aeq( y2 ),
       (Term::LetPair( x1, bnd1 ), Term::LetPair( x2, bnd2 ) ) =>
         x1.aeq( x2 ) && bnd1.term( ).term( ).aeq( bnd2.term( ).term( ) ),
+      (Term::TyEq( x1, y1 ), Term::TyEq( x2, y2 ) ) =>
+        x1.aeq( x2 ) && y1.aeq( y2 ),
+      (Term::Refl, Term::Refl) => true,
+      (Term::Subst( x1, y1 ), Term::Subst( x2, y2 ) ) =>
+        x1.aeq( x2 ) && y1.aeq( y2 ),
+      (Term::Contra( x1 ), Term::Contra( x2 )) =>
+        x1.aeq( x2 ),
       (_, _) => false
     }
   }
@@ -259,7 +305,11 @@ impl Term {
       Term::If( _, _, _ ) => Prec::IfThenElse,
       Term::Sigma( _, _ ) => Prec::Atom,
       Term::Prod( _, _ ) => Prec::Atom,
-      Term::LetPair( _, _ ) => Prec::IfThenElse
+      Term::LetPair( _, _ ) => Prec::IfThenElse,
+      Term::TyEq( _, _ ) => Prec::Equality,
+      Term::Refl => Prec::Atom,
+      Term::Subst( _, _ ) => Prec::IfThenElse,
+      Term::Contra( _ ) => Prec::Atom
     }
   }
 }
@@ -268,7 +318,8 @@ pub enum Prec {
   Colon, // weakest
   Lambda,
   Arrow,
-  IfThenElse, // also let-binding
+  Equality,
+  IfThenElse, // also let-binding, subst
   App,
   Atom // Strongest
 }
@@ -283,7 +334,8 @@ impl Prec {
     match self {
       Prec::Colon => Prec::Lambda,
       Prec::Lambda => Prec::Arrow,
-      Prec::Arrow => Prec::IfThenElse,
+      Prec::Arrow => Prec::Equality,
+      Prec::Equality => Prec::IfThenElse,
       Prec::IfThenElse => Prec::App,
       Prec::App => Prec::Atom,
       Prec::Atom => Prec::Atom // fix point
@@ -301,9 +353,10 @@ impl Prec {
       Prec::Colon      => 0,
       Prec::Lambda     => 1,
       Prec::Arrow      => 2,
-      Prec::IfThenElse => 3,
-      Prec::App        => 4,
-      Prec::Atom       => 5
+      Prec::Equality   => 3,
+      Prec::IfThenElse => 4,
+      Prec::App        => 5,
+      Prec::Atom       => 6
     }
   }
 }

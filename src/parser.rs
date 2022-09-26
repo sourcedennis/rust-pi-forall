@@ -92,6 +92,7 @@ fn lex_padding( input: Span ) -> IResult< Span, () > {
       alt(
         (
           discard( tag( " " ) ),
+          discard( tag( "\t" ) ),
           discard( tag( "\r" ) ),
           discard( tag( "\n" ) ),
           lex_line_comment,
@@ -217,6 +218,7 @@ fn p_term_prec< 'a >( prec: Prec )
     Prec::Lambda     => p_term_lambda,
     Prec::Arrow      => p_term_arrow,
     Prec::IfThenElse => p_term_iflet,
+    Prec::Equality   => p_equality,
     Prec::App        => p_term_app,
     Prec::Atom       => p_term_atom
   }
@@ -318,6 +320,7 @@ pub fn p_term_iflet< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
     (
       p_ifthenelse,
       p_letin,
+      p_subst,
       p_term_prec( Prec::IfThenElse.inc( ) )
     )
   )( input )
@@ -348,14 +351,37 @@ pub fn p_letin< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   let (input, y_name) = p_identifier( input )?;
   let (input, _) = lex_symbol_if( |x| x == ")" )( input )?;
   let (input, _) = lex_symbol_if( |x| x == "=" )( input )?;
-  let (input, scrut) = p_term_prec( Prec::weakest( ) )( input )?;
+  let (input, scrut) = p_term_prec( Prec::IfThenElse.inc( ) )( input )?;
   let (input, _) = lex_word_if( |x| x == "in" )( input )?;
-  let (input, body) = p_term_prec( Prec::weakest( ) )( input )?;
+  let (input, body) = p_term_prec( Prec::IfThenElse )( input )?;
 
   let bnd1 = Bind::bind( &FreeName::Text( y_name.to_string( ) ), Box::new( body ) );
   let bnd2 = Bind::bind( &FreeName::Text( x_name.to_string( ) ), bnd1 );
 
   Ok( (input, Term::LetPair( Box::new( scrut ), bnd2 ) ) )
+}
+
+/// Parse: <term> := 'subst' <term+1> 'by' <term+1>
+pub fn p_subst< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _)  = lex_word_if( |x| x == "subst" )( input )?;
+  let (input, x)  = p_term_prec( Prec::IfThenElse.inc( ) )( input )?;
+  let (input, _)  = lex_word_if( |x| x == "by" )( input )?;
+  let (input, pf) = p_term_prec( Prec::IfThenElse.inc( ) )( input )?;
+
+  Ok( (input, Term::Subst( Box::new( x ), Box::new( pf ) ) ) )
+}
+
+/// Parse: <term> := <term+1> '=' <term+1>
+///                | <term+1>
+pub fn p_equality< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, x) = p_term_prec( Prec::Equality.inc( ) )( input )?;
+
+  if let Ok( (input, _) ) = lex_symbol_if( |x| x == "=" )( input ) {
+    let (input, y) = p_term_prec( Prec::Equality.inc( ) )( input )?;
+    Ok( (input, Term::TyEq( Box::new( x ), Box::new( y ) ) ) )
+  } else {
+    Ok( (input, x) )
+  }
 }
 
 /// Parse: <term> := <term+1>+
@@ -383,7 +409,9 @@ pub fn p_term_atom< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
       map( lex_word_if( |x| x == "False" ), |_| Term::LitBool( false ) ),
       map( lex_symbol_if( |x| x == "()" ), |_| Term::LitUnit ),
       map( lex_word_if( |x| x == "Unit" ), |_| Term::TyUnit ),
+      map( lex_word_if( |x| x == "Refl" ), |_| Term::Refl ),
       map( p_identifier, |x| Term::Var( Name::Free( FreeName::Text( x.to_owned( ) ) ) ) ),
+      p_contra,
       p_sigma_type,
       p_tuple
     )
@@ -410,6 +438,12 @@ pub fn p_tuple< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   } else {
     Ok( ( input, v1 ) )
   }
+}
+
+fn p_contra< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+  let (input, _) = lex_word_if( |x| x == "contra" )( input )?;
+  let (input, x) = p_term_prec( Prec::Atom )( input )?;
+  Ok( ( input, Term::Contra( Box::new( x ) ) ) )
 }
 
 pub fn p_sigma_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {

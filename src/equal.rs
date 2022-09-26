@@ -60,6 +60,20 @@ pub fn equate< F: FreshVar >( fresh_env: &mut F, env: &Env, x: &Term, y: &Term )
         let (_, body1, body2) = Bind::unbind2( fresh_env, bnd1, bnd2 );
         equate( fresh_env, env, &body1, &body2 )
       },
+      (Term::TyEq( x1, y1 ), Term::TyEq( x2, y2 )) => {
+        equate( fresh_env, env, &x1, &x2 )?;
+        equate( fresh_env, env, &y1, &y2 )
+      },
+      (Term::Refl, Term::Refl) => {
+        Ok( () )
+      },
+      (Term::Subst( x1, y1 ), Term::Subst( x2, y2 )) => {
+        equate( fresh_env, env, &x1, &x2 )?;
+        equate( fresh_env, env, &y1, &y2 )
+      },
+      (Term::Contra( x1 ), Term::Contra( x2 )) => {
+        equate( fresh_env, env, &x1, &x2 )
+      }
       (x, y) => Err( format!( "{:?} != {:?}", x, y ) )
     }
   }
@@ -99,6 +113,13 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
         Term::LetPair( Box::new( x ), bnd )
       }
     },
+    Term::Subst( tm, pf ) => {
+      let pf = whnf( env, *pf );
+      match pf {
+        Term::Refl => whnf( env, *tm ),
+        _ => Term::Subst( tm, Box::new( pf ) )
+      }
+    },
     // Keep these in here explicit (as opposed to "_") to get notified whenever
     // a case is missing after extending the syntax.
     Term::Type => t,
@@ -111,5 +132,8 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
     Term::LitUnit => t,
     Term::Sigma( _, _ ) => t,
     Term::Prod( _, _ ) => t,
+    Term::TyEq( _, _ ) => t,
+    Term::Refl => t,
+    Term::Contra( _ ) => t,
   }
 }
