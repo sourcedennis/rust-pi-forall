@@ -1,11 +1,24 @@
 
 // local imports
-use crate::syntax::Term;
-use crate::environment::Env;
+use crate::syntax::{Term, Arg, Epsilon};
+use crate::environment::{Env, ErrMsg, assert_res};
 use crate::unbound::{Name, Bind, FreshVar};
 
 
-type ErrMsg = String;
+pub fn equate_arg< F: FreshVar >(
+  fresh_env: &mut F,
+  env: &Env,
+  x: &Arg,
+  y: &Arg
+) -> Result< (), ErrMsg > {
+  if x.eps == Epsilon::Rel && y.eps == Epsilon::Rel {
+    equate( fresh_env, env, &x.term, &y.term )
+  } else if x.eps == Epsilon::Irr && y.eps == Epsilon::Irr {
+    Ok( () )
+  } else {
+    Err( "Relevance mismatch".to_owned( ) )
+  }
+}
 
 pub fn equate< F: FreshVar >( fresh_env: &mut F, env: &Env, x: &Term, y: &Term ) -> Result< (), ErrMsg > {
   if x.aeq( y ) {
@@ -22,16 +35,18 @@ pub fn equate< F: FreshVar >( fresh_env: &mut F, env: &Env, x: &Term, y: &Term )
         } else {
           Err( format!( "{:?} != {:?}", x, y ) )
         },
-      (Term::Lam( bnd1 ), Term::Lam( bnd2 ) ) => {
+      (Term::Lam( eps1, bnd1 ), Term::Lam( eps2, bnd2 ) ) => {
+        assert_res( eps1 == eps2, format!( "{:?} != {:?}", eps1, eps2 ) )?;
         let (_, body1, body2) = Bind::unbind2( fresh_env, bnd1, bnd2 );
         equate( fresh_env, env, &body1, &body2 )
       },
       (Term::App( x1, y1 ), Term::App( x2, y2 ) ) => {
         equate( fresh_env, env, &x1, &x2 )?;
-        equate( fresh_env, env, &y1, &y2 )
+        equate_arg( fresh_env, env, &y1, &y2 )
       },
-      (Term::Pi( x1, bnd1 ), Term::Pi( y1, bnd2 ) ) => {
-        equate( fresh_env, env, &x1, &y1 )?;
+      (Term::Pi( eps1, x1, bnd1 ), Term::Pi( eps2, x2, bnd2 ) ) => {
+        assert_res( eps1 == eps2, format!( "{:?} != {:?}", eps1, eps2 ) )?;
+        equate( fresh_env, env, &x1, &x2 )?;
         equate( fresh_env, env, &bnd1.term( ), &bnd2.term( ) )
       },
       (Term::TyBool, Term::TyBool) => Ok( () ),
@@ -89,8 +104,8 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
       },
     Term::App( x, y ) => {
       let x = whnf( env, *x );
-      if let Term::Lam( bnd ) = x {
-        whnf( env, *bnd.instantiate( &y ) )
+      if let Term::Lam( _, bnd ) = x {
+        whnf( env, *bnd.instantiate( &y.term ) )
       } else {
         Term::App( Box::new( x ), y )
       }
@@ -124,8 +139,8 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
     // a case is missing after extending the syntax.
     Term::Type => t,
     Term::Var( Name::Bound( _ ) ) => t,
-    Term::Lam( _ ) => t,
-    Term::Pi( _, _ ) => t,
+    Term::Lam( _, _ ) => t,
+    Term::Pi( _, _, _ ) => t,
     Term::TyBool => t,
     Term::LitBool( _ ) => t,
     Term::TyUnit => t,

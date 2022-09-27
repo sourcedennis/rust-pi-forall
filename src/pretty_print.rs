@@ -146,19 +146,27 @@ impl EnvDisplay for Term {
           write!( f, "{}", env.free_name_string( n ) )?,
         Term::Var( Name::Bound( n ) ) =>
           write!( f, "{}", bound_names[ bound_names.len( ) - 1 - n.de_bruijn_index( ) ] )?,
-        Term::Lam( _ ) => {
+        Term::Lam( _, _ ) => {
           let mut t_temp = t;
           let mut num_lambdas = 0;
 
           write!( f, "\\" )?;
           // true for at least one iteration, by the above matching
-          while let Term::Lam( b ) = t_temp {
+          while let Term::Lam( eps, b ) = t_temp {
             if b.term( ).references_bind0( ) {
               let n = env.fresh_name( );
-              write!( f, "{} ", n )?;
+              if *eps == Epsilon::Irr {
+                write!( f, "[{}] ", n )?;
+              } else {
+                write!( f, "{} ", n )?;
+              }
               bound_names.push( n );
             } else {
-              write!( f, "_ " )?;
+              if *eps == Epsilon::Irr {
+                write!( f, "[_] " )?;
+              } else {
+                write!( f, "_ " )?;
+              }
               bound_names.push( "_".to_owned( ) ) // No name. Not used anyway
             };
             t_temp = b.term( );
@@ -175,19 +183,37 @@ impl EnvDisplay for Term {
         Term::App( x, y ) => {
           rec_bracket( env, bound_names, x, Prec::App, f )?;
           write!( f, " " )?;
-          rec_bracket( env, bound_names, y, Prec::Atom, f )?;
+          if y.eps == Epsilon::Irr {
+            write!( f, "[" )?;
+            rec_bracket( env, bound_names, &y.term, Prec::weakest(), f )?;
+            write!( f, "]" )?;
+          } else {
+            rec_bracket( env, bound_names, &y.term, Prec::Atom, f )?;
+          }
         },
         // (x : A) -> B
-        Term::Pi( a, b ) => {
+        Term::Pi( eps, a, b ) => {
           let bound_name = 
             if b.term( ).references_bind0( ) {
               let n = env.fresh_name( );
-              write!( f, "({} : ", n )?;
-              rec_bracket( env, bound_names, a, Prec::Colon, f )?;
-              write!( f, ") -> " )?;
+              if *eps == Epsilon::Irr {
+                write!( f, "[{} : ", n )?;
+                rec_bracket( env, bound_names, a, Prec::Colon, f )?;
+                write!( f, "] -> " )?;
+              } else {
+                write!( f, "({} : ", n )?;
+                rec_bracket( env, bound_names, a, Prec::Colon, f )?;
+                write!( f, ") -> " )?;
+              }
               n
             } else {
-              rec_bracket( env, bound_names, a, Prec::Arrow.inc( ), f )?;
+              if *eps == Epsilon::Irr {
+                write!( f, "[" )?;
+                rec_bracket( env, bound_names, a, Prec::Arrow.inc( ), f )?;
+                write!( f, "]" )?;
+              } else {
+                rec_bracket( env, bound_names, a, Prec::Arrow.inc( ), f )?;
+              }
               write!( f, " -> " )?;
               "".to_owned( ) // no name. because it's not used anyway
             };
@@ -262,11 +288,9 @@ impl EnvDisplay for Term {
           rec_bracket( env, bound_names, x, Prec::Atom, f )?;
         }
         Term::Ann( x, y ) => {
-          write!( f, "(" )?;
           rec_bracket( env, bound_names, x, Prec::Colon.inc( ), f )?;
           write!( f, " : " )?;
           rec_bracket( env, bound_names, y, Prec::Colon, f )?;
-          write!( f, ")" )?;
         }
       }
       Ok( () )
@@ -282,9 +306,9 @@ impl EnvDisplay for Term {
 impl EnvDisplay for Decl< String > {
   fn fmt( &self, env: &mut NameEnv, f: &mut Formatter<'_> ) -> std::fmt::Result {
     match self {
-      Decl::TypeSig( name, t ) => {
-        write!( f, "{} : ", name )?;
-        t.fmt( env, f )
+      Decl::TypeSig( sig ) => {
+        write!( f, "{} : ", sig.name )?;
+        sig.ttype.fmt( env, f )
       },
       Decl::Def( name, t ) => {
         write!( f, "{} = ", name )?;
@@ -303,9 +327,9 @@ impl Display for Module {
     // Rule out all the free names
     for decl in &self.entries {
       match decl {
-        Decl::TypeSig( name, t ) => {
-          env_builder.reserve( name.to_owned( ) );
-          env_builder = t.visit_preorder( |t2, mut env_builder| {
+        Decl::TypeSig( sig ) => {
+          env_builder.reserve( sig.name.to_owned( ) );
+          env_builder = sig.ttype.visit_preorder( |t2, mut env_builder| {
             match t2 {
               Term::Var( Name::Free( FreeName::Text( n ) ) ) =>
                 env_builder.reserve( n.to_owned( ) ),
@@ -362,9 +386,9 @@ impl Display for Ctx {
           term.fmt( &mut name_env, f )?;
           writeln!( f )?;
         },
-        Decl::TypeSig( name, ttype ) => {
-          write!( f, "{} : ", name_env.free_name_string( name ) )?;
-          ttype.fmt( &mut name_env, f )?;
+        Decl::TypeSig( sig ) => {
+          write!( f, "{} : ", name_env.free_name_string( &sig.name ) )?;
+          sig.ttype.fmt( &mut name_env, f )?;
           writeln!( f )?;
         }
       }

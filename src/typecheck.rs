@@ -1,8 +1,8 @@
 
 // local imports
 use crate::unbound::{FreshVar, Name, FreeName, Bind};
-use crate::syntax::{Term, Type, Module, Decl};
-use crate::environment::{Env, Ctx};
+use crate::syntax::{Term, Type, Module, Decl, Sig, Epsilon};
+use crate::environment::{Env, Ctx, assert_res};
 use crate::equal::{whnf, equate};
 
 
@@ -13,25 +13,25 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
 
   for d in &m.entries {
     match d {
-      Decl::TypeSig( name, ttype ) => {
-        tc_type( fresh_env, &env, &ttype )?;
-        env.add_hint( FreeName::Text( name.clone( ) ), ttype.clone( ) );
+      Decl::TypeSig( sig ) => {
+        tc_type( fresh_env, &env, &sig.ttype )?;
+        env.add_hint( Sig::new( sig.name.clone( ), Epsilon::Rel, sig.ttype.clone( ) ) );
       },
       Decl::Def( name, term ) => {
         let fname = FreeName::Text( name.clone( ) );
 
         if env.lookup_def( &fname ).is_some( ) {
           return Err( format!( "Multiple definitions of {}", name ) );
-        } else if let Some( ty_hint ) = env.lookup_hint( &fname ) {
+        } else if let Some( ty_hint ) = env.lookup_hint( &name ) {
           let mut env2 = env.clone( );
-          env2.extend( Decl::TypeSig( fname.clone( ), ty_hint.clone( ) ) );
-          check_type( fresh_env, &env2, &term, ty_hint.clone( ) )?;
+          env2.extend( Decl::TypeSig( Sig::new( fname.clone( ), Epsilon::Rel, ty_hint.ttype.clone( ) ) ) );
+          check_type( fresh_env, &env2, &term, ty_hint.ttype.clone( ) )?;
 
-          env.extend( Decl::TypeSig( fname.clone( ), ty_hint.clone( ) ) );
+          env.extend( Decl::TypeSig( Sig::new( fname.clone( ), Epsilon::Rel, ty_hint.ttype.clone( ) ) ) );
           env.extend( Decl::Def( fname, term.clone( ) ) );
         } else {
           let term_type = tc_term( fresh_env, &env, &term, None )?;
-          env.extend( Decl::TypeSig( fname.clone( ), term_type ) );
+          env.extend( Decl::TypeSig( Sig::new( fname.clone( ), Epsilon::Rel, term_type ) ) );
           env.extend( Decl::Def( fname, term.clone( ) ) );
         }
       }
@@ -41,9 +41,9 @@ pub fn tc_module< F : FreshVar >( fresh_env: &mut F, m: &Module ) -> Result< Ctx
   Ok( env.into( ) )
 }
 
-fn ensure_pi( env: &Env, t: Term ) -> Result< (Term, Bind<Term>), ErrorMsg > {
+fn ensure_pi( env: &Env, t: Term ) -> Result< (Epsilon, Term, Bind<Term>), ErrorMsg > {
   match whnf( env, t ) {
-    Term::Pi( ty_a, bnd ) => Ok( ( *ty_a, bnd.unbox() ) ),
+    Term::Pi( eps, ty_a, bnd ) => Ok( ( eps, *ty_a, bnd.unbox() ) ),
     Term::Ann( t , _ ) => ensure_pi( env, *t ),
     t => Err( format!( "Expected a function type but found {:?}", t ) )
   }
@@ -84,7 +84,10 @@ fn tc_type< Fresh: FreshVar >(
   env: &Env,
   t: &Term
 ) -> Result< (), ErrorMsg > {
-  check_type( fresh_env, env, t, Term::Type )
+  // Checking whether a type is a type is never relevant (apparently)
+  let mut env2 = env.clone( );
+  env2.demote_all( );
+  check_type( fresh_env, &env2, t, Term::Type )
 }
 
 /// Either typecheck (if `t_type.is_some()`) or perform type inference (when
@@ -103,42 +106,59 @@ fn tc_term< Fresh: FreshVar >(
       // only possible if somebody constructed an invalid `Term`.
       Err( "AST error".to_string( ) ),
     (Term::Var( Name::Free( n ) ), None) =>
-      if let Some( n_type ) = env.lookup_type( n ) {
-        Ok( n_type.clone( ) )
+      if let Some( sig ) = env.lookup_type( n ) {
+        assert_res( sig.eps == Epsilon::Rel,
+          "Cannot access irrelevant variables in this context".to_owned( ) )?;
+        Ok( sig.ttype.clone( ) )
       } else {
         Err( format!( "unknown variable \"{:?}\"", n ) )
       },
     (Term::Type, None) => Ok( Term::Type ), // type-in-type
-    (Term::Pi(ty_a, bnd), None) => {
+    (Term::Pi(eps, ty_a, bnd), None) => {
       // (x : A) -> B
       let (x, ty_b) = bnd.clone( ).unbind( fresh_env );
       tc_type( fresh_env, env, ty_a )?; // Check: Γ ⊢ A : Type
       
       let mut env2: Env = env.clone( );
-      env2.extend( Decl::TypeSig( x, *ty_a.clone( ) ) );
+      env2.extend( Decl::TypeSig( Sig::new( x, *eps, *ty_a.clone( ) ) ) );
       tc_type( fresh_env, &env2, &ty_b )?; // Check: Γ,(x:A) ⊢ B : Type
 
       Ok( Term::Type ) // Then: Γ ⊢ (x : A) -> B : Type
     },
-    (Term::Lam(bnd), Some( Term::Pi( ty_a, bnd2 ))) => {
-      let (x, body, ty_b) = Bind::unbind2( fresh_env, bnd.clone( ), bnd2.clone( ) );
+    (Term::Lam( eps1, bnd1), Some( Term::Pi( eps2, ty_a, bnd2 ))) => {
+      let (x, body, ty_b) = Bind::unbind2( fresh_env, bnd1.clone( ), bnd2.clone( ) );
+
+      assert_res( *eps1 == eps2, "Mismatching epsilons".to_owned( ) )?;
 
       // Check: Γ,(x:A) ⊢ body : B
       let mut env2 = env.clone( );
-      env2.extend( Decl::TypeSig( x, *ty_a.clone( ) ) );
+      env2.extend( Decl::TypeSig( Sig::new( x, *eps1, *ty_a.clone( ) ) ) );
       check_type( fresh_env, &env2, &body, *ty_b )?;
 
-      Ok( Term::Pi( ty_a.clone( ), bnd2 ) )
+      Ok( Term::Pi( *eps1, ty_a.clone( ), bnd2 ) )
     },
-    (Term::Lam( _ ), Some( ttype ) ) => Err( format!( "A lambda expression should have a function type, not {:?}", ttype ) ),
+    (Term::Lam( _, _ ), Some( ttype ) ) => Err( format!( "A lambda expression should have a function type, not {:?}", ttype ) ),
     (Term::App(t1, t2), None) => {
       // Infer:  Γ ⊢ t1 : (x : A) -> B
       let ty1 = tc_term( fresh_env, env, t1, None )?;
-      let (ty_a, bnd) = ensure_pi( env, ty1 )?;
-      // Check:  Γ ⊢ t2 : A
-      check_type( fresh_env, env, t2, ty_a )?;
+      let (eps1, ty_a, bnd) = ensure_pi( env, ty1 )?;
 
-      Ok( bnd.instantiate( t2 ) )
+      assert_res( eps1 == t2.eps, "Mismatching epsilons".to_owned( ) )?;
+
+      // Check:  Γ ⊢ t2 : A
+      if eps1 == Epsilon::Irr {
+        // Seen:  Γ ⊢ t1 : [x : A] -> B
+        // There, `x` is irrelevant. So, "resurrect" the context before
+        // typechecking `x`.
+        let mut env2 = env.clone( );
+        env2.demote_all( );
+
+        check_type( fresh_env, &env2, &t2.term, ty_a )?;
+      } else {
+        check_type( fresh_env, &env, &t2.term, ty_a )?;
+      }
+
+      Ok( bnd.instantiate( &t2.term ) )
     },
     (Term::Ann( tm, ty ), None) => {
       tc_type( fresh_env, env, ty )?;
@@ -185,7 +205,7 @@ fn tc_term< Fresh: FreshVar >(
       let (x, y_ty) = bnd.clone( ).unbind( fresh_env );
 
       let mut env2 = env.clone( );
-      env2.extend( Decl::TypeSig( x, *x_ty.clone( ) ) );
+      env2.extend( Decl::new_sig( x, Epsilon::Rel, *x_ty.clone( ) ) );
       // Check:  Γ,(x:x_ty) ⊢ y_ty : Type
       tc_type( fresh_env, &env2, &y_ty )?;
 
@@ -198,7 +218,7 @@ fn tc_term< Fresh: FreshVar >(
       check_type( fresh_env, env, x, *x_ty.clone( ) )?;
 
       let mut env2 = env.clone( );
-      env2.extend( Decl::TypeSig( x_name.clone( ), *x_ty.clone( ) ) );
+      env2.extend( Decl::new_sig( x_name.clone( ), Epsilon::Rel, *x_ty.clone( ) ) );
       env2.extend( Decl::Def( x_name.clone( ), *x.clone( ) ) );
       check_type( fresh_env, &env2, y, *y_ty.clone( ) )?;
       
@@ -222,8 +242,8 @@ fn tc_term< Fresh: FreshVar >(
               Box::new( Term::Var( Name::Free( y_name.clone( ) ) ) ) ) );
           
           let mut env2 = env.clone( );
-          env2.extend( Decl::TypeSig( x_name, *x_ty ) );
-          env2.extend( Decl::TypeSig( y_name, *y_ty ) );
+          env2.extend( Decl::new_sig( x_name, Epsilon::Rel, *x_ty ) );
+          env2.extend( Decl::new_sig( y_name, Epsilon::Rel, *y_ty ) );
           if let Some( decl ) = decl {
             env2.extend( decl );
           }
@@ -291,7 +311,7 @@ fn tc_term< Fresh: FreshVar >(
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::Subst( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
-    (Term::Lam( _ ), None) =>
+    (Term::Lam( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::Prod( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),

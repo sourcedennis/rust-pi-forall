@@ -1,10 +1,9 @@
 
-use std::slice::Iter;
-
 // stdlib imports
+use std::slice::Iter;
 // local imports
 use crate::unbound::FreeName;
-use crate::syntax::{Term, Type, Decl};
+use crate::syntax::{Term, Decl, Sig};
 
 
 /// Definitions that have been typechecked
@@ -36,16 +35,25 @@ impl Ctx {
     self.0.iter( )
   }
 
-  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
+  /// Make all declarations in the context *relevant*.
+  pub fn demote_all( &mut self ) {
+    for decl in &mut self.0 {
+      match decl {
+        Decl::Def( _, _ ) => { },
+        Decl::TypeSig( sig ) => sig.demote( )
+      }
+    }
+  }
+
+  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Sig< FreeName > > {
     map_maybe_last( |x|
       x.type_sig( )
-        .filter( |(name, _)| *name == n )
-        .map( |(_, ty)| ty ),
+        .filter( |sig| sig.name == *n ),
       &self.0
     )
   }
 
-  pub fn lookup_def( &self, n: &FreeName ) -> Option< &Term > {
+  pub fn lookup_def< 'a >( &'a self, n: &FreeName ) -> Option< &'a Term > {
     map_maybe_last( |x|
       x.def( )
         .filter( |(name, _)| *name == n )
@@ -72,7 +80,7 @@ pub struct Env {
 
   /// Type hints provided in the source, e.g.:
   /// f : Nat -> Nat
-  hints : Vec< (FreeName, Type) >
+  hints : Vec< Sig< String > >
 }
 
 #[allow(dead_code)]
@@ -83,11 +91,15 @@ impl Env {
       hints: Vec::new( )
     }
   }
+  /// Make all declarations in the context *relevant*.
+  pub fn demote_all( &mut self ) {
+    self.ctx.demote_all( );
+  }
 
-  pub fn lookup_hint( &self, n: &FreeName ) -> Option< &Type > {
-    map_maybe_last( |(name, t)|
-      if name == n {
-        Some( t )
+  pub fn lookup_hint< 'a >( &'a self, n: &str ) -> Option< &'a Sig< String > > {
+    map_maybe_last( |sig|
+      if sig.name == *n {
+        Some( sig )
       } else {
         None
       },
@@ -95,7 +107,7 @@ impl Env {
     )
   }
 
-  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Type > {
+  pub fn lookup_type( &self, n: &FreeName ) -> Option< &Sig< FreeName > > {
     self.ctx.lookup_type( n )
   }
 
@@ -109,13 +121,24 @@ impl Env {
     self.ctx.extend( decl );
   }
 
-  pub fn add_hint( &mut self, n: FreeName, t: Type ) {
-    self.hints.push( (n, t) );
+  pub fn add_hint( &mut self, sig: Sig< String > ) {
+    self.hints.push( sig );
   }
 }
 
 impl From< Env > for Ctx {
   fn from( env: Env ) -> Ctx {
     env.ctx
+  }
+}
+
+pub type ErrMsg = String;
+
+/// Utility function. (Replaces `unless` on the typechecking monad)
+pub fn assert_res( b: bool, msg: ErrMsg ) -> Result< (), ErrMsg > {
+  if b {
+    Ok( () )
+  } else {
+    Err( msg )
   }
 }

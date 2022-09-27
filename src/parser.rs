@@ -7,11 +7,11 @@ use nom::{
   combinator::{opt, recognize, verify, map},
   sequence::{delimited, separated_pair, preceded},
   error::{Error, ErrorKind, ParseError},
-  branch::alt, multi::{many1_count, separated_list1, many1}
+  branch::alt, multi::{many1_count, separated_list1, many1, many0}
 };
 use nom_locate::LocatedSpan;
 // local imports
-use crate::unbound::{FreeName, Name, Bind};
+use crate::{unbound::{FreeName, Name, Bind}, syntax::{Epsilon, Arg, Sig}};
 use crate::syntax::{Module, Decl, Term, Prec};
 use crate::pretty_print::{RESERVED};
 
@@ -63,7 +63,9 @@ fn lex_symbol( input: Span ) -> IResult< Span, () > {
         tag( "{" ), // for sigma types
         tag( "|" ), // for sigma types
         tag( "}" ), // for sigma types
-        tag( "," )
+        tag( "," ),
+        tag( "[" ), // for irrelevance
+        tag( "]" )  // for irrelevance
       )
     )
   )( input )
@@ -245,23 +247,49 @@ pub fn p_term_colon< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
 
 /// Parse:
 /// <term> := <term+1> '->' <term>
+///         | '[' <term> ']' '->' <term>
 ///         | '(' <identifier> ':' <term> ')' '->' <term>
+///         | '[' <identifier> ':' <term> ']' '->' <term>
 ///         | <term+1>
 pub fn p_term_arrow< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   /// Parses: '(' <identifier> ':' <term> ')'
   fn p_named_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, (&'a str, Term) > {
     delimited(
       lex_symbol_if( |x| x == "(" ),
-      separated_pair( p_identifier, lex_symbol_if( |x| x == ":" ), p_term_prec( Prec::Arrow ) ),
+      separated_pair(
+        p_identifier,
+        lex_symbol_if( |x| x == ":" ),
+        p_term_prec( Prec::Arrow )
+      ),
       lex_symbol_if( |x| x == ")" )
     )( input )
   }
 
-  let (input, (lhs_name, lhs_term)) =
+  /// Parses: '[' <identifier> ':' <term> ']'
+  fn p_irr_named_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, (&'a str, Term) > {
+    delimited(
+      lex_symbol_if( |x| x == "[" ),
+      separated_pair( p_identifier, lex_symbol_if( |x| x == ":" ), p_term_prec( Prec::Arrow ) ),
+      lex_symbol_if( |x| x == "]" )
+    )( input )
+  }
+
+  /// Parses: '[' <term> ']'
+  fn p_irr_type< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
+    delimited(
+      lex_symbol_if( |x| x == "[" ),
+      p_term_prec( Prec::Arrow ),
+      lex_symbol_if( |x| x == "]" )
+    )( input )
+  }
+
+  let (input, (lhs_name, eps, lhs_term)) =
     alt(
       (
-        map( p_named_type, |(n,t)| (Some(n), t) ),
-        map( p_term_prec( Prec::Arrow.inc( ) ), |t| (None, t) )
+        map( p_named_type, |(n,t)| (Some(n), Epsilon::Rel, t) ),
+        map( p_irr_named_type, |(n,t)| (Some(n), Epsilon::Irr, t) ),
+        map( p_irr_type, |t| (None, Epsilon::Irr, t) ),
+        map( p_term_prec( Prec::Arrow.inc( ) ), |t| (None, Epsilon::Rel, t) )
       )
     )( input )?;
 
@@ -278,35 +306,59 @@ pub fn p_term_arrow< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
     let t =
       if let Some( lhs_name ) = lhs_name {
         let name = FreeName::from( FreeName::Text( lhs_name.to_owned( ) ) );
-        Term::Pi( Box::new( lhs_term ), Bind::bind( &name, Box::new( rhs ) ) )
+        Term::Pi( eps, Box::new( lhs_term ), Bind::bind( &name, Box::new( rhs ) ) )
       } else {
-        Term::Pi( Box::new( lhs_term ), Bind::nameless_bind( Box::new( rhs ) ) )
+        Term::Pi( eps, Box::new( lhs_term ), Bind::nameless_bind( Box::new( rhs ) ) )
       };
     Ok( (input, t ) )
-  } else if lhs_name.is_some( ) { // cannot have just (x : A) as type
-    // if it has a name, there must be an arrow
-    Err(nom::Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+  } else if let Some( lhs_name ) = lhs_name {
+    if eps == Epsilon::Irr { // cannot have just [x : A] as term
+      Err(nom::Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+    } else { // eps == Epsilon::Rel. we parsed (x : A) without arrow
+      let name = FreeName::from( FreeName::Text( lhs_name.to_owned( ) ) );
+      let term = Term::Var( Name::Free( name ) );
+      let ttype = lhs_term;
+      Ok( ( input, Term::Ann( Box::new( term ), Box::new( ttype ) ) ) )
+    }
   } else { // case: <term> := <term+1>
-    Ok( (input, lhs_term) )
+    Ok( ( input, lhs_term ) )
   }
 }
 
+/// Parse: <eps-identifier> := <identifier>
+///                          | '[' <identifier> ']'
+fn p_eps_identifier< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, (Epsilon, &'a str) > {
+  alt(
+    (
+      map( p_identifier, |x| (Epsilon::Rel, x) ),
+      map(
+        delimited(
+          lex_symbol_if( |x| x == "[" ),
+          p_identifier,
+          lex_symbol_if( |x| x == "]" )
+        ),
+        |x| (Epsilon::Irr, x)
+      )
+    )
+  )( input )
+}
+
 /// Parse:
-/// <term> := '\' <identifier>* '.' <term>
+/// <term> := '\' <eps-identifier>* '.' <term>
 ///         | <term+1>
 pub fn p_term_lambda< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   let (input, m_lambda) = opt( lex_symbol_if( |x| x == "\\" ) )( input )?;
 
   if m_lambda.is_some( ) {
-    let (input, identifiers) = many1( p_identifier )( input )?;
+    let (input, identifiers) = many1( p_eps_identifier )( input )?;
 
     let (input, _) = lex_symbol_if( |x| x == "." )( input )?;
     
     let (input, mut body) = p_term_prec( Prec::Lambda )( input )?;
 
-    for id in identifiers.into_iter( ).rev( ) {
+    for (eps, id) in identifiers.into_iter( ).rev( ) {
       let name = FreeName::from( FreeName::Text( id.to_owned( ) ) );
-      body = Term::Lam( Bind::bind( &name, Box::new( body ) ) );
+      body = Term::Lam( eps, Bind::bind( &name, Box::new( body ) ) );
     }
 
     Ok( (input, body) )
@@ -384,20 +436,31 @@ pub fn p_equality< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
   }
 }
 
+pub fn p_arg< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Arg > {
+  alt(
+    (
+      map( p_term_prec( Prec::App.inc( ) ), |x| Arg::new( Epsilon::Rel, x ) ),
+      map(
+        delimited(
+          lex_symbol_if( |x| x == "[" ),
+          p_term_prec( Prec::weakest( ) ),
+          lex_symbol_if( |x| x == "]" )
+        ),
+        |x| Arg::new( Epsilon::Irr, x ) ),
+    )
+  )( input )
+}
+
 /// Parse: <term> := <term+1>+
 pub fn p_term_app< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
-  let (input, terms) = many1( p_term_prec( Prec::App.inc( ) ) )( input )?;
-  let mut t_iter = terms.into_iter( );
+  let (input, mut term) = p_term_prec( Prec::App.inc( ) )( input )?;
 
-  if let Some( mut term ) = t_iter.next( ) {
-    while let Some( term_rhs ) = t_iter.next( ) {
-      term = Term::App( Box::new( term ), Box::new( term_rhs ) );
-    }
-    Ok( (input, term) )
-  } else {
-    // This cannot happen, because `terms.len() > 0` (because of `many1`)
-    Err(nom::Err::Error(Error::from_error_kind(input, ErrorKind::Tag)))
+  let (input, args) = many0( p_arg )( input )?;
+
+  for arg in args {
+    term = Term::App( Box::new( term ), Box::new( arg ) );
   }
+  Ok( (input, term) )
 }
 
 pub fn p_term_atom< 'a >( input: Span< 'a > ) -> IResult< Span< 'a >, Term > {
@@ -464,7 +527,7 @@ pub fn p_decl( input: Span ) -> IResult< Span, Decl< String > > {
 
   if t == ":" { // type signature
     let (input, y) = p_term_prec( Prec::Arrow )( input )?;
-    Ok( (input, Decl::TypeSig( name.to_owned( ), y ) ) )
+    Ok( (input, Decl::TypeSig( Sig::new( name.to_owned( ), Epsilon::Rel, y ) ) ) )
   } else { // function definition
     let (input, y) = p_term_prec( Prec::weakest( ) )( input )?;
     Ok( (input, Decl::Def( name.to_owned( ), y ) ) )

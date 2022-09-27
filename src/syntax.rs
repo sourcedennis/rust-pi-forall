@@ -13,11 +13,11 @@ pub enum Term {
   /// Variable
   Var( Name ),
   /// Lambda expression
-  Lam( Bind< Box< Term > > ),
+  Lam( Epsilon, Bind< Box< Term > > ),
   /// Function application
-  App( Box< Term >, Box< Term > ),
+  App( Box< Term >, Box< Arg > ),
   /// A Pi-type, being a dependent function type: (x: A) -> B
-  Pi( Box< Type >, Bind< Box< Type > > ),
+  Pi( Epsilon, Box< Type >, Bind< Box< Type > > ),
   /// Annotated terms ( a : A )
   Ann( Box< Term >, Box< Type > ),
   /// 
@@ -54,16 +54,16 @@ impl Term {
     match self {
       Term::Type => f( &self, v ),
       Term::Var( _ ) => f( &self, v ),
-      Term::Lam( x ) => {
+      Term::Lam( _, x ) => {
         let v = f( &self, v );
         x.term( ).visit_preorder( f, v )
       },
       Term::App( x, y ) => {
         let v = f( &self, v );
         let v = x.visit_preorder( f, v );
-        y.visit_preorder( f, v )
+        y.term.visit_preorder( f, v )
       },
-      Term::Pi( x, y ) => {
+      Term::Pi( _, x, y ) => {
         let v = f( &self, v );
         let v = x.visit_preorder( f, v );
         y.term( ).visit_preorder( f, v )
@@ -124,10 +124,10 @@ impl Term {
         Term::Type => false,
         Term::Var( Name::Bound( i ) ) => i.de_bruijn_index( ) == level,
         Term::Var( _ ) => false,
-        Term::Lam( x ) => rec( level + 1, x.term( ) ),
+        Term::Lam( _, x ) => rec( level + 1, x.term( ) ),
         Term::App( x, y ) =>
-          rec( level, x ) || rec( level, y ),
-        Term::Pi( x, y ) => rec( level, x ) || rec( level + 1, y.term( ) ),
+          rec( level, x ) || rec( level, &y.term ),
+        Term::Pi( _, x, y ) => rec( level, x ) || rec( level + 1, y.term( ) ),
         Term::Ann( x, y ) => rec( level, x ) || rec( level, y ),
         Term::TyUnit => false,
         Term::LitUnit => false,
@@ -148,12 +148,12 @@ impl Term {
   }
 }
 
-impl Subst< &Term > for Box< Term > {
-  fn subst( mut self, n: &Name, t: &Term ) -> Box< Term > {
+impl< T1, T2: Subst< T1 > > Subst< T1 > for Box< T2 > {
+  fn subst( mut self, n: &Name, t: T1 ) -> Box< T2 > {
     // This avoids cloning
     unsafe {
-      let ptr: &mut Term = &mut *self;
-      let x = std::ptr::read( ptr ).subst( n, t );
+      let ptr: &mut T2 = &mut *self;
+      let x = std::ptr::read( ptr );
       let x = x.subst( n, t );
       std::ptr::write( ptr, x );
     }
@@ -171,9 +171,9 @@ impl Subst< &Term > for Term {
         } else {
           self
         },
-      Term::Lam( bnd ) => Term::Lam( bnd.subst( name, t ) ),
+      Term::Lam( eps, bnd ) => Term::Lam( eps, bnd.subst( name, t ) ),
       Term::App( x, y ) => Term::App( x.subst( name, t ), y.subst( name, t ) ),
-      Term::Pi( x, y ) => Term::Pi( x.subst( name, t ), y.subst( name, t ) ),
+      Term::Pi( eps, x, y ) => Term::Pi( eps, x.subst( name, t ), y.subst( name, t ) ),
       Term::Ann( x, x_type ) => Term::Ann( x.subst( name, t ), x_type.subst( name, t ) ),
       Term::TyUnit => self,
       Term::LitUnit => self,
@@ -203,9 +203,9 @@ impl LocallyNameless for Term {
         } else {
           self
         },
-      Term::Lam( b ) => Term::Lam( b.open( level, new ) ),
+      Term::Lam( eps, b ) => Term::Lam( eps, b.open( level, new ) ),
       Term::App( x, y ) => Term::App( x.open( level, new ), y.open( level, new ) ),
-      Term::Pi( a, f ) => Term::Pi( a.open( level, new ), f.open( level, new ) ),
+      Term::Pi( eps, a, f ) => Term::Pi( eps, a.open( level, new ), f.open( level, new ) ),
       Term::Ann( x, y ) => Term::Ann( x.open( level, new ), y.open( level, new ) ),
       Term::TyUnit => self,
       Term::LitUnit => self,
@@ -233,9 +233,9 @@ impl LocallyNameless for Term {
           Term::Var( Name::Free( n ) ) // = self
         },
       Term::Var( Name::Bound( _ ) ) => self,
-      Term::Lam( b ) => Term::Lam( b.close( level, old ) ),
+      Term::Lam( eps, b ) => Term::Lam( eps, b.close( level, old ) ),
       Term::App( x, y ) => Term::App( x.close( level, old ), y.close( level, old ) ),
-      Term::Pi( a, f ) => Term::Pi( a.close( level, old ), f.close( level, old ) ),
+      Term::Pi( eps, a, f ) => Term::Pi( eps, a.close( level, old ), f.close( level, old ) ),
       Term::Ann( x, y ) => Term::Ann( x.close( level, old ), y.close( level, old ) ),
       Term::TyUnit => self,
       Term::LitUnit => self,
@@ -261,12 +261,12 @@ impl Term {
       (_, Term::Ann( y, _ )) => self.aeq( y ),
       (Term::Type, Term::Type) => true,
       (Term::Var( x ), Term::Var( y )) => x == y,
-      (Term::Lam( x ), Term::Lam( y )) =>
-        x.term( ).aeq( y.term( ) ),
+      (Term::Lam( eps0, x ), Term::Lam( eps1, y )) =>
+        eps0 == eps1 && x.term( ).aeq( y.term( ) ),
       (Term::App( x0, y0 ), Term::App( x1, y1 )) =>
         x0.aeq( x1 ) && y0.aeq( y1 ),
-      (Term::Pi( x0, y0 ), Term::Pi( x1, y1 ) ) =>
-        x0.aeq( x1 ) && y0.term( ).aeq( y1.term( ) ),
+      (Term::Pi( eps0, x0, y0 ), Term::Pi( eps1, x1, y1 ) ) =>
+        eps0 == eps1 && x0.aeq( x1 ) && y0.term( ).aeq( y1.term( ) ),
       (Term::TyBool, Term::TyBool ) => true,
       (Term::LitBool( b1 ), Term::LitBool( b2 ) ) => ( b1 == b2 ),
       (Term::TyUnit, Term::TyUnit) => true,
@@ -294,9 +294,9 @@ impl Term {
     match self {
       Term::Type => Prec::Atom,
       Term::Var( _ ) => Prec::Atom,
-      Term::Lam( _ ) => Prec::Lambda,
+      Term::Lam( _, _ ) => Prec::Lambda,
       Term::App( _, _ ) => Prec::App,
-      Term::Pi( _, _ ) => Prec::Arrow,
+      Term::Pi( _, _, _ ) => Prec::Arrow,
       Term::Ann( _, _ ) => Prec::Colon,
       Term::TyBool => Prec::Atom,
       Term::LitBool( _ ) => Prec::Atom,
@@ -314,6 +314,49 @@ impl Term {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct Arg {
+  pub eps  : Epsilon,
+  pub term : Term
+}
+
+impl Arg {
+  pub fn new( eps: Epsilon, term: Term ) -> Arg {
+    Arg { eps, term }
+  }
+
+  pub fn aeq( &self, y: &Arg ) -> bool {
+    self.eps == y.eps && self.term.aeq( &y.term )
+  }
+}
+
+impl LocallyNameless for Arg {
+  fn open( self, level: Level, new: &FreeName ) -> Self {
+    Arg::new( self.eps, self.term.open( level, new ) )
+  }
+
+  fn close( self, level: Level, old: &FreeName ) -> Self {
+    Arg::new( self.eps, self.term.close( level, old ) )
+  }
+}
+
+impl Subst< &Term > for Arg {
+  fn subst( self, x: &Name, t: &Term ) -> Self {
+    Arg::new( self.eps, self.term.subst( x, t ) )
+  }
+}
+
+///
+/// The (implicit) order on this enum is: Rel < Irr
+#[derive(Debug,Clone,Copy,PartialEq)]
+pub enum Epsilon {
+  /// Relevant
+  Rel,
+  /// Irrelevant
+  Irr
+}
+
+#[derive(Debug)]
 pub enum Prec {
   Colon, // weakest
   Lambda,
@@ -361,6 +404,24 @@ impl Prec {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct Sig< N > {
+  pub name  : N,
+  pub eps   : Epsilon,
+  pub ttype : Type
+}
+
+impl< N > Sig< N > {
+  pub fn new( name: N, eps: Epsilon, ttype: Type ) -> Sig< N > {
+    Sig { name, eps, ttype }
+  }
+
+  /// Make the definition *relevant*
+  pub fn demote( &mut self ) {
+    self.eps = Epsilon::Rel;
+  }
+}
+
 // Parameterised over names
 #[derive(Debug, Clone)]
 pub enum Decl< N = String > {
@@ -368,7 +429,7 @@ pub enum Decl< N = String > {
   /// 
   /// Example:
   /// id : (x : Type) -> (y : x) -> x
-  TypeSig( N, Type ),
+  TypeSig( Sig< N > ),
   /// Definition of some name. Must already have a type declaration.
   /// 
   /// Example:
@@ -377,6 +438,10 @@ pub enum Decl< N = String > {
 }
 
 impl< N > Decl< N > {
+  pub fn new_sig( n: N, rel: Epsilon, t: Type ) -> Decl< N > {
+    Decl::TypeSig( Sig::new( n, rel, t ) )
+  }
+
   pub fn is_def( &self ) -> bool {
     match self {
       Decl::Def( _, _ ) => true,
@@ -387,7 +452,7 @@ impl< N > Decl< N > {
   pub fn name( &self ) -> &N {
     match self {
       Decl::Def( n, _ ) => n,
-      Decl::TypeSig( n, _ ) => n
+      Decl::TypeSig( sig ) => &sig.name
     }
   }
 
@@ -399,9 +464,9 @@ impl< N > Decl< N > {
     }
   }
 
-  pub fn type_sig( &self ) -> Option< (&N, &Term) > {
-    if let Decl::TypeSig( n, t ) = self {
-      Some( (n, t) )
+  pub fn type_sig( &self ) -> Option< &Sig< N > > {
+    if let Decl::TypeSig( sig ) = self {
+      Some( sig )
     } else {
       None
     }
