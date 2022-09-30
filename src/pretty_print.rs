@@ -1,7 +1,7 @@
 
-use std::{fmt::{Formatter, Display}, collections::{HashMap, HashSet}};
-
 // stdlib imports
+use std::fmt::{Formatter, Display};
+use std::collections::{HashMap, HashSet};
 // local imports
 use crate::unbound::{Name, FreeName};
 use crate::syntax::*;
@@ -11,7 +11,8 @@ use crate::environment::Ctx;
 pub const RESERVED: &[&'static str] =
   &[ "Type", "Bool", "True", "False",
      "if", "then", "else", "let", "in",
-     "Unit", "Refl", "subst", "by", "contra"
+     "Unit", "Refl", "subst", "by", "contra",
+     "case", "of"
     ];
 
 /// A builder for `NameEnv`. We want to ensure `reserve` is *not* called after
@@ -36,7 +37,8 @@ impl NameEnvBuilder {
     NameEnv {
       reserved: self.0,
       free_names: HashMap::new( ),
-      fresh_idx: 0
+      fresh_idx: 0,
+      indent: 0
     }
   }
 }
@@ -51,6 +53,8 @@ pub struct NameEnv {
   reserved: HashSet< String >,
   free_names: HashMap< usize, String >,
   fresh_idx : usize,
+
+  indent: usize,
 }
 
 impl NameEnv {
@@ -286,11 +290,78 @@ impl EnvDisplay for Term {
         Term::Contra( x ) => {
           write!( f, "contra " )?;
           rec_bracket( env, bound_names, x, Prec::Atom, f )?;
-        }
+        },
+        Term::Case( x, matches ) => {
+          write!( f, "case " )?;
+          rec_bracket( env, bound_names, x, Prec::IfThenElse.inc( ), f )?;
+          writeln!( f, " of" )?;
+          env.indent += 1;
+
+          for m in matches {
+            for _ in 0..env.indent {
+              write!( f, " " )?;
+            }
+            // Note that this also bind the variables inside `bound_names`.
+            print_pattern( env, bound_names, &m.pattern, false, f )?;
+            write!( f, " -> " )?;
+
+            let num_vars = m.pattern.num_vars( );
+
+            rec_bracket( env, bound_names, m.term.term( ), Prec::Arrow.inc( ), f )?;
+
+            for _i in 0..num_vars {
+              bound_names.pop( );
+            }
+            writeln!( f )?;
+          }
+          
+          env.indent -= 1;
+
+          for _ in 0..env.indent {
+            write!( f, " " )?;
+          }
+        },
         Term::Ann( x, y ) => {
           rec_bracket( env, bound_names, x, Prec::Colon.inc( ), f )?;
           write!( f, " : " )?;
           rec_bracket( env, bound_names, y, Prec::Colon, f )?;
+        }
+      }
+      Ok( () )
+    }
+
+    fn print_pattern(
+      env: &mut NameEnv,
+      bound_names: &mut Vec< String >,
+      p: &Pattern,
+      // true if the outer scope gave it brackets
+      has_brackets: bool,
+      f: &mut Formatter<'_>
+    ) -> std::fmt::Result {
+      match p {
+        Pattern::Con( name, xs ) => {
+          if !has_brackets && !xs.is_empty( ) {
+            write!( f, "(" )?;
+          }
+          write!( f, "{}", name )?;
+          for (sub_p, eps) in xs {
+            write!( f, " " )?;
+            if *eps == Epsilon::Irr {
+              write!( f, "[" )?;
+              print_pattern( env, bound_names, sub_p, true, f )?;
+              write!( f, "]" )?;
+            } else {
+              print_pattern( env, bound_names, sub_p, false, f )?;
+            }
+          }
+          if !has_brackets && !xs.is_empty( ) {
+            write!( f, ")" )?;
+          }
+        },
+        Pattern::Var => {
+          let name = env.fresh_name( );
+          write!( f, "{}", name )?;
+          bound_names.push( name );
         }
       }
       Ok( () )

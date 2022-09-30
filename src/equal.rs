@@ -88,7 +88,10 @@ pub fn equate< F: FreshVar >( fresh_env: &mut F, env: &Env, x: &Term, y: &Term )
       },
       (Term::Contra( x1 ), Term::Contra( x2 )) => {
         equate( fresh_env, env, &x1, &x2 )
-      }
+      },
+      (Term::Case( _, _ ), Term::Case( _, _ )) => {
+        unimplemented!( )
+      },
       (x, y) => Err( format!( "{:?} != {:?}", x, y ) )
     }
   }
@@ -134,6 +137,9 @@ pub fn whnf( env: &Env, t: Term ) -> Term {
         Term::Refl => whnf( env, *tm ),
         _ => Term::Subst( tm, Box::new( pf ) )
       }
+    },
+    Term::Case( _, _ ) => {
+      unimplemented!() // TODO
     },
     // Keep these in here explicit (as opposed to "_") to get notified whenever
     // a case is missing after extending the syntax.

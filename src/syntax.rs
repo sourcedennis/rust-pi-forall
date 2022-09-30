@@ -44,7 +44,9 @@ pub enum Term {
   /// subst a by pf
   Subst( Box< Term >, Box< Term > ),
   /// equality contradiction
-  Contra( Box< Term > )
+  Contra( Box< Term > ),
+  /// 
+  Case( Box< Term >, Vec< Match > )
 }
 
 impl Term {
@@ -112,6 +114,10 @@ impl Term {
       Term::Contra( x ) => {
         let v = f( &self, v );
         x.visit_preorder( f, v )
+      },
+      Term::Case( _, matches ) => {
+        let v = f( &self, v );
+        matches.iter( ).fold( v, |acc,m| m.term.term( ).visit_preorder( f, acc ) )
       }
     }
   }
@@ -140,7 +146,11 @@ impl Term {
         Term::TyEq( x, y ) => rec( level, x ) || rec( level, y ),
         Term::Refl => false,
         Term::Subst( x, y ) => rec( level, x ) || rec( level, y ),
-        Term::Contra( x ) => rec( level, x )
+        Term::Contra( x ) => rec( level, x ),
+        Term::Case( t, xs ) =>
+          rec( level, t ) ||
+            xs.iter( )
+              .any( |x| rec( level + x.pattern.num_vars( ), x.term.term( ) ) )
       }
     }
 
@@ -158,6 +168,21 @@ impl< T1, T2: Subst< T1 > > Subst< T1 > for Box< T2 > {
       std::ptr::write( ptr, x );
     }
     self
+  }
+}
+
+impl Subst< &Term > for ManyBind< Term > {
+  fn subst( self, name: &Name, t: &Term ) -> ManyBind< Term > {
+    match self {
+      ManyBind::Base( x ) => ManyBind::Base( x.subst( name, t ) ),
+      ManyBind::Bind1( x ) => ManyBind::Bind1( x.subst( name, t ) )
+    }
+  }
+}
+
+impl Subst< &Term > for Match {
+  fn subst( self, name: &Name, t: &Term ) -> Match {
+    Match { pattern: self.pattern, term: self.term.subst( name, t ) }
   }
 }
 
@@ -186,8 +211,39 @@ impl Subst< &Term > for Term {
       Term::TyEq( x, y ) => Term::TyEq( x.subst( name, t ), y.subst( name, t ) ),
       Term::Refl => self,
       Term::Subst( x, y ) => Term::Subst( x.subst( name, t ), y.subst( name, t ) ),
-      Term::Contra( x ) => Term::Contra( x.subst( name, t ) )
+      Term::Contra( x ) => Term::Contra( x.subst( name, t ) ),
+      Term::Case( x, xs ) =>
+        Term::Case(
+          x.subst( name, t ),
+          xs.into_iter( ).map( |x| x.subst( name, t ) ).collect( )
+        )
     }
+  }
+}
+
+impl< T: LocallyNameless > LocallyNameless for ManyBind< T > {
+  fn open( self, level: Level, new: &FreeName ) -> Self {
+    match self {
+      ManyBind::Base( x ) => ManyBind::Base( x.open( level, new ) ),
+      ManyBind::Bind1( x ) => ManyBind::Bind1( x.open( level, new ) )
+    }
+  }
+
+  fn close( self, level: Level, old: &FreeName ) -> Self {
+    match self {
+      ManyBind::Base( x ) => ManyBind::Base( x.close( level, old ) ),
+      ManyBind::Bind1( x ) => ManyBind::Bind1( x.close( level, old ) )
+    }
+  }
+}
+
+impl LocallyNameless for Match {
+  fn open( self, level: Level, new: &FreeName ) -> Self {
+    Match { pattern: self.pattern, term: self.term.open( level, new ) }
+  }
+
+  fn close( self, level: Level, old: &FreeName ) -> Self {
+    Match { pattern: self.pattern, term: self.term.open( level, old ) }
   }
 }
 
@@ -218,7 +274,12 @@ impl LocallyNameless for Term {
       Term::TyEq( x, y ) => Term::TyEq( x.open( level, new ), y.open( level, new ) ),
       Term::Refl => self,
       Term::Subst( x, y ) => Term::Subst( x.open( level, new ), y.open( level, new ) ),
-      Term::Contra( x ) => Term::Contra( x.open( level, new ) )
+      Term::Contra( x ) => Term::Contra( x.open( level, new ) ),
+      Term::Case( x, xs ) =>
+        Term::Case(
+          x.open( level, new ),
+          xs.into_iter( ).map( |x| x.open( level, new ) ).collect( )
+        )
     }
   }
 
@@ -248,7 +309,12 @@ impl LocallyNameless for Term {
       Term::TyEq( x, y ) => Term::TyEq( x.close( level, old ), y.close( level, old ) ),
       Term::Refl => self,
       Term::Subst( x, y ) => Term::Subst( x.close( level, old ), y.close( level, old ) ),
-      Term::Contra( x ) => Term::Contra( x.close( level, old ) )
+      Term::Contra( x ) => Term::Contra( x.close( level, old ) ),
+      Term::Case( x, xs ) =>
+        Term::Case(
+          x.close( level, old ),
+          xs.into_iter( ).map( |x| x.close( level, old ) ).collect( )
+        )
     }
   }
 }
@@ -286,6 +352,13 @@ impl Term {
         x1.aeq( x2 ) && y1.aeq( y2 ),
       (Term::Contra( x1 ), Term::Contra( x2 )) =>
         x1.aeq( x2 ),
+      (Term::Case( x1, xs1 ), Term::Case( x2, xs2 ) ) => {
+        x1.aeq( x2 ) &&
+          xs1.iter( )
+             .zip( xs2.iter( ) )
+             .all( |(x,y)| x.term.term( ).aeq( y.term.term( ) )
+          )
+      },
       (_, _) => false
     }
   }
@@ -309,7 +382,8 @@ impl Term {
       Term::TyEq( _, _ ) => Prec::Equality,
       Term::Refl => Prec::Atom,
       Term::Subst( _, _ ) => Prec::IfThenElse,
-      Term::Contra( _ ) => Prec::Atom
+      Term::Contra( _ ) => Prec::Atom,
+      Term::Case( _, _ ) => Prec::IfThenElse
     }
   }
 }
@@ -354,6 +428,52 @@ pub enum Epsilon {
   Rel,
   /// Irrelevant
   Irr
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+  Con( String, Vec< (Pattern, Epsilon) > ),
+  Var
+}
+
+impl Pattern {
+  /// The numbers of variables bound by the pattern
+  pub fn num_vars( &self ) -> usize {
+    match self {
+      Pattern::Var => 1,
+      Pattern::Con( _, xs ) =>
+        xs.iter( ).map( |(x,_)| x.num_vars( ) ).sum( )
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub enum ManyBind< T > {
+  Base( T ),
+  Bind1( Bind< Box< ManyBind< T > > > )
+}
+
+impl< T > ManyBind< T > {
+  pub fn term( &self ) -> &T {
+    match self {
+      ManyBind::Base( x ) => x,
+      ManyBind::Bind1( b ) => b.term( ).term( )
+    }
+  }
+}
+
+/// pattern matching that shows up in function definitions, e.g.:
+/// f (Left (Right x)) = x * 2
+#[derive(Debug, Clone)]
+pub struct Match {
+  pub pattern: Pattern,
+  pub term:    ManyBind< Term >
+}
+
+impl Match {
+  pub fn new( pattern: Pattern, term: ManyBind< Term > ) -> Match {
+    Match { pattern, term }
+  }
 }
 
 #[derive(Debug)]

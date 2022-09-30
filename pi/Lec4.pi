@@ -1,0 +1,12 @@
+module Lec4 where
+
+-- Examples of "dirt-simple" datatypes 
+-- booleans are primitive to the implementation (so that we can continue
+-- to use if), but Void and Nat must be defined
+
+not : Bool -> Bool
+not = \ b . 
+  case b of 
+       True -> False
+       False -> True
+       

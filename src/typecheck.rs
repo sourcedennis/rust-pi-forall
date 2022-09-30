@@ -302,6 +302,9 @@ fn tc_term< Fresh: FreshVar >(
         _ => Err( "Not contradictory".to_owned( ) )
       }
     },
+    (Term::Case( _, _ ), Some( _ )) => {
+      unimplemented!( ) // TODO
+    }
     (tm, Some( ty ) ) => {
       let ty2 = tc_term( fresh_env, env, tm, None )?;
       equate( fresh_env, env, &ty, &ty2 )?;
@@ -318,6 +321,8 @@ fn tc_term< Fresh: FreshVar >(
     (Term::LetPair( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
     (Term::Contra( _ ), None) =>
+      Err( format!( "Must have a type annotation to check {:?}", t ) ),
+    (Term::Case( _, _ ), None) =>
       Err( format!( "Must have a type annotation to check {:?}", t ) ),
   }
 }
