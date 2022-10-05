@@ -8,12 +8,21 @@ pi-forall is a demo dependently-typed programming language. Its reference implem
 
 I replicate the `full/` variant of pi-forall presented at OPLSS [2022](https://github.com/sweirich/pi-forall/tree/2022). Though, I only reimplemented *a subset* of features that I consider interesting. Also keep in mind that idiomatic Rust has a vastly different structure from idiomatic Haskell; No monads, nor its transformers.
 
+## Features
+
+Currently, we support:
+
+* Equality
+* Irrelevance
+
+That roughly corresponds with `version3/`. Datatypes are still missing. (Though, the parser supports `case` statements)
+
 ## Running
 
 First, [install Rust](https://www.rust-lang.org/tools/install). Then, run (in this directory):
 
 ```sh
-cargo run --release -- Nat.pi
+cargo run --release -- pi/Lec1.pi
 ```
 
-That typechecks `Nat.pi` in the `pi/` directory.
+That typechecks `pi/Lec1.pi`.
